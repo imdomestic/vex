@@ -112,7 +112,8 @@ Gradle 使用 P0 已经真实生成的 Gradle/NeoForm 缓存；Fabric 任务继�
 ## 2026-10-15：tank 集成验收
 
 测试沿用 encore 的现有 SSH 身份，并使用 Mac 已信任的 tank 主机公钥进行严格校验；生产同步继续关闭。
-断点续传验收只中断测试使用的 SSH 传输连接，随后重试并核对远端摘要与大小；测试文件永久保留在独立 it 时间戳目录。
+实际 Tailscale 中断验收通过已验证的独立 LAN SSH 控制：预设 90 秒恢复任务，暂停 tailscaled 65 秒，再核对真实队列重试、远端摘要和大小。验收期间没有运行中的游戏或 Gradle 构建；测试文件永久保留在独立 it 时间戳目录。
+同一保护任务负责恢复 tailscaled 与原本运行的 tailscale-device-rtt、tailscale-path-metrics 两个监控 timer；验收期间暂停这两个 timer，完成后验证其恢复运行。
 
 ## 2026-10-15：容量实测
 

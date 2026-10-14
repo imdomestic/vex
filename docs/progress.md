@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-P0、P1、P5 通过。P2 的 encore 自动验收全部通过，节点集群验收待 seraph。P3/P4 已完成构建、144 项回归及 41 项附加测试、真实 API 与旧提交启动计划验证；真实进入待用户登录。P6 正在验证恢复世界后启动。P7 今晚不执行。
+P0、P1、P5、P6 通过。P2 的 encore 自动验收全部通过，节点集群验收待 seraph。P3/P4 已完成构建、144 项回归及 41 项附加测试、真实 API 与旧提交启动计划验证；真实进入待用户登录。生产 tank 同步等待用户提供身份，热缓存全部保留。P7 今晚不执行。
 
 需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；本晚执行以 `directives/2026-10-15-decisions.md` 为准。
 
@@ -57,6 +57,12 @@ P0、P1、P5 通过。P2 的 encore 自动验收全部通过，节点集群验�
 
 04:54 JST：plaza 编辑候选 promote 为 revision 2，重复 promote、下载摘要和源世界保留检查通过；Go build/vet/test 全部通过，日志 `.work/logs/p5-go-validation.log`。
 
+05:02 JST：tank-only 快照自动恢复后启动真实 Minecraft，通过 Pod、路由 SLP 与区块/方块日志验证；真实资源包 CLI 上传、幂等和下载校验通过，测试命名空间已删除。日志 `.work/p6-seed.log`。
+
+05:11 JST：真实 Tailscale 中断 65 秒后恢复，SQLite 重开后的第二次同步完成续传、远端校验、淘汰与恢复；Go build/vet/test 全部通过。日志 `.work/p6-tailscale-test.log`、`.work/p6-final-checks.log`。
+
+05:12 JST：收尾检查通过，临时房间 closed、main-fabric stopped 且 PVC 保留；测试命名空间与游戏进程均已清理，生产服务正常，根盘可用 32.22 GiB。日志 `.work/final-health.log`；审阅文件交付到本机 `Downloads/Chorus-Testbed-审阅-2026-10-15/`。
+
 | 阶段 | 必需证据 | 当前状态 |
 | --- | --- | --- |
 | P0 | 集群、存储、构建、镜像实际启动、ruri 构建和测试、环境报告 | 通过 |
@@ -65,7 +71,7 @@ P0、P1、P5 通过。P2 的 encore 自动验收全部通过，节点集群验�
 | P3 | 服务器页面自动进入、模组替换、明确错误、测试验证 | 自动化通过；新应用登录与真实进入待用户 |
 | P4 | 合并提交图、旧提交房间进入、失败日志 | 自动化通过；真实进入待用户 |
 | P5 | plaza 资产发布、游戏内往返 transfer、构建约束、资源包 | 通过；资源包 N/A |
-| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 真实同步、淘汰与恢复通过；正在验证恢复后的 Minecraft 启动 |
+| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 通过；生产同步待用户提供 SSH 身份 |
 
 ## 使用的默认值
 
@@ -75,10 +81,9 @@ P0、P1、P5 通过。P2 的 encore 自动验收全部通过，节点集群验�
 
 ## 需要用户确认
 
-- P1 使用独立验收数据目录与 systemd user 构建单元，P2 完整迁移到 `/srv/chorus` 并执行系统服务化；运行数据和世界保留。
-- 客户端采用 EventSource 1.4.0 解析 SSE；独立钥匙串服务为 `dev.ruri.launcher.chorus.api`。
-- 临时 zone 为 `100-64-0-43.sslip.io`，晨间配置 split DNS 后切回 `chorus.internal`。
-- Minecraft 26.3 的测试实例使用直接 Java 启动，并通过 macOS 正常退出请求结束游戏；详情见 decisions。
+- 待用户：独立 Ruri Chorus 登录与 P3/P4 真实进入、split DNS、tank 生产 SSH 身份、两个 GitHub 远端、d2 发布分支审阅。
+- 待 hank：Minecraft 用户名与 token 安全交付；待 seraph：加入 k3s 后的调度及失联验收。
+- 已实施的自主选择供复核：固定 systemd 构建模板、EventSource 1.4.0 与专属钥匙串、SDL 客户端启动和正常退出方式、LAN 控制下的 Tailscale 故障测试。详情见 `decisions.md`，具体操作见晨报。
 
 ## 用户已确定的配置
 
