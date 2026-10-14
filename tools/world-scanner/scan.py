@@ -20,20 +20,18 @@ def permitted(path):
     return resolved
 
 
-def scan_world(directory, minecraft):
-    world = permitted(directory)
-    namespaces = set()
-    counts = {'regions': 0, 'chunks': 0, 'nbtFiles': 0}
+def identifiers(value):
+    result = set()
 
     def identifier(value):
         namespace, separator, name = str(value).partition(':')
-        if separator and namespace != 'minecraft' and name:
-            namespaces.add(namespace)
+        if separator and namespace and name:
+            result.add(str(value))
 
     def visit(value, key=''):
         if isinstance(value, nbt.TAG_Compound):
             for child in value.tags:
-                visit(child, child.name)
+                visit(child, child.name or key)
         elif isinstance(value, nbt.TAG_List):
             for child in value.tags:
                 visit(child, key)
@@ -42,12 +40,21 @@ def scan_world(directory, minecraft):
                 identifier(value.value)
         elif isinstance(value, dict):
             for name, child in value.items():
-                visit(child, name)
+                visit(child, name or key)
         elif isinstance(value, (list, nbtlib.List)):
             for child in value:
                 visit(child, key)
         elif isinstance(value, (str, nbtlib.String)) and key in ('id', 'Name', 'palette'):
             identifier(value)
+
+    visit(value)
+    return result
+
+
+def scan_world(directory, minecraft):
+    world = permitted(directory)
+    found = set()
+    counts = {'regions': 0, 'chunks': 0, 'nbtFiles': 0}
 
     if (world / 'level.dat').is_symlink():
         raise ValueError('世界目录包含链接')
@@ -70,11 +77,13 @@ def scan_world(directory, minecraft):
                     for z in range(32):
                         if region.chunk_location(x, z) == (0, 0):
                             continue
-                        visit(region.chunk_data(x, z))
+                        found.update(identifiers(region.chunk_data(x, z)))
                         counts['chunks'] += 1
             elif path.suffix in ('.dat', '.dat_old'):
-                visit(nbtlib.load(path))
+                found.update(identifiers(nbtlib.load(path)))
                 counts['nbtFiles'] += 1
+    namespaces = {value.partition(':')[0] for value in found}
+    namespaces.discard('minecraft')
     return {'minecraft': version, 'namespaces': sorted(namespaces), **counts}
 
 

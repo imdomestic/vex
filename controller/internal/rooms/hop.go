@@ -34,12 +34,14 @@ func (m *Manager) assetDestination(ctx context.Context,asset model.Asset,build m
 	if asset.State!="active"||asset.Restore!=nil&&(asset.Restore.Status=="queued"||asset.Restore.Status=="running"){return result,model.Failure("conflict","资产尚未处于可进入状态")}
 	id,err:=RoomID("asset",build.SHA,build.Loader,asset.ID);if err!=nil{return result,err}
 	revision:=asset.LatestRev
-	state:="stopped"
+	state:="available"
+	var existingRoomID *string
 	worldExists:=false
 	room,err:=m.Get(ctx,id)
 	if err==nil {
 		if room.Label!="testing"||room.State=="stopping"||room.State=="archiving"||room.State=="lost"{return result,model.Failure("conflict","资产房间当前无法进入")}
 		state=room.State
+		existingRoomID=&room.ID
 		runtime,err:=m.runtime(ctx,id);if err!=nil{return result,err}
 		worldExists=runtime.WorldExists
 		if (worldExists||Active(room.State))&&room.SeedResolved!=nil{revision=room.SeedResolved.Rev}
@@ -51,7 +53,7 @@ func (m *Manager) assetDestination(ctx context.Context,asset model.Asset,build m
 		if err=file.Close();err!=nil{return result,err}
 		if value.ResourcePack!=nil{file,err=m.Assets.OpenPack(ctx,value.ResourcePack.ID,value.ResourcePack.Rev);if err!=nil{return result,err};if err=file.Close();err!=nil{return result,err}}
 	}
-	return model.HopDestination{Dest:"asset:"+asset.ID,Kind:"asset",ID:asset.ID,Title:asset.Title,RoomID:&id,BuildID:build.ID,State:state},nil
+	return model.HopDestination{Dest:"asset:"+asset.ID,Kind:"asset",ID:asset.ID,Title:asset.Title,RoomID:existingRoomID,BuildID:build.ID,State:state},nil
 }
 
 func (m *Manager) Destinations(ctx context.Context,from string,identity auth.Identity) ([]model.HopDestination,error) {
@@ -97,8 +99,7 @@ func (m *Manager) Hop(ctx context.Context,from,destination string,player model.P
 	switch kind {
 	case "asset":
 		asset,err:=m.Assets.Get(ctx,id);if err!=nil{return result,0,err}
-		target,err:=m.assetDestination(ctx,asset,build);if err!=nil{return result,0,err}
-		if target.RoomID==nil{return result,0,model.Failure("not_found","资产房间不存在")}
+		if _,err=m.assetDestination(ctx,asset,build);err!=nil{return result,0,err}
 		room,_,err:=m.create(ctx,"asset",source.SHA,source.Loader,"asset:"+id,id);if err!=nil{return result,0,err}
 		id=room.ID
 	case "room":

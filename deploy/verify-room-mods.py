@@ -27,4 +27,4 @@ assert sorted(actual) == sorted(entry['name'] for entry in files)
 for entry in files:
     size = subprocess.run(command + ['exec', pod_name, '-c', 'mc', '--', 'stat', '-c', '%s', f'/data/mods/{entry["name"]}'], check=True, capture_output=True).stdout
     assert int(size) == entry['size']
-print(json.dumps({'room': room['id'], 'build': build['id'], 'generation': room['generation'], 'verifiedMods': len(files)}))
+print(json.dumps({'room': room['id'], 'build': build['id'], 'generation': room['generation'], 'verifiedMods': len(files), 'files': [{'name': entry['name'], 'sha256': entry['sha256'], 'size': entry['size'], 'side': entry['side']} for entry in files]}))

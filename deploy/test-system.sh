@@ -25,6 +25,8 @@ for name in GTL bedrock-proxy bingo lobby proxy speedrun; do
 done
 ! systemctl is-active --quiet chorus-revert.timer
 ! systemctl is-active --quiet chorus-revert.service
+exec 9</srv/chorus-build.lock
+flock --exclusive --nonblock 9
 systemctl list-units 'chorus-build@*' --all --output=json >"$TMPDIR/system-build-units.json"
 jq -e 'all(.[]; .sub != "running" and .active != "activating" and .active != "deactivating")' "$TMPDIR/system-build-units.json" >/dev/null
 while IFS= read -r unit; do

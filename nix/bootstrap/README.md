@@ -15,7 +15,7 @@ flake 在添加 k3s 模块之前检查完整系统路径必须等于：
 2026-10-14 的生产部署已运行 `nixosConfigurations.encore-chorus`。该配置在 P0 配置上增加 `chorusd`、受限构建模板、世界扫描工具和 DNS 服务。最新一轮部署的运行系统与持久系统 profile 均已指向：
 
 ```text
-/nix/store/kbcibn41n3ds675mh7bqimsnil98lkh0-nixos-system-encore-26.05.20260911.21a67dc
+/nix/store/i9d513024yxxr8dbd8m1fi87d918nzqg-nixos-system-encore-26.05.20260911.21a67dc
 ```
 
 后续源码更新会产生新的系统路径；实际路径通过 `readlink -f /run/current-system` 与 `readlink -f /nix/var/nix/profiles/system` 核对，部署证据保存在 `/home/linwhite/chorus-testbed/.work/activation/`。

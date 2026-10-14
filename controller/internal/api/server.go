@@ -94,7 +94,7 @@ func (s *Server) Handler() http.Handler {
 	register("POST /v1/assets/{id}/restore","user",s.assetRestore)
 	register("GET /v1/assets/{id}/revisions/{rev}/download","download",func(w http.ResponseWriter,r *http.Request,id auth.Identity)error{f,err:=s.Rooms.Assets.OpenWorld(r.Context(),r.PathValue("id"),r.PathValue("rev"));if err!=nil{return err};return serveFile(w,r,f,"application/gzip")})
 	register("POST /v1/packs/{id}/revisions","user",s.packPublish)
-	register("GET /v1/packs/{id}/revisions/{rev}/download","download",func(w http.ResponseWriter,r *http.Request,id auth.Identity)error{f,err:=s.Rooms.Assets.OpenPack(r.Context(),r.PathValue("id"),r.PathValue("rev"));if err!=nil{return err};return serveFile(w,r,f,"application/zip")})
+	register("GET /v1/packs/{id}/{file}","download",s.packFile)
 	register("GET /v1/hop/destinations","room",func(w http.ResponseWriter,r *http.Request,id auth.Identity)error{v,err:=s.Rooms.Destinations(r.Context(),r.URL.Query().Get("fromRoom"),id);if err!=nil{return err};return respond(w,200,v)})
 	register("POST /v1/hop","room",func(w http.ResponseWriter,r *http.Request,id auth.Identity)error{
 		var body struct{FromRoom string `json:"fromRoom"`;Dest string `json:"dest"`;Player model.Player `json:"player"`}
@@ -215,6 +215,14 @@ func (s *Server) buildFile(w http.ResponseWriter,r *http.Request,id auth.Identit
 func (s *Server) dependency(w http.ResponseWriter,r *http.Request,id auth.Identity) error {f,err:=s.Builds.OpenDependency(r.Context(),r.PathValue("sha"));if err!=nil{return err};return serveFile(w,r,f,"application/java-archive")}
 
 var hopPublishedName=regexp.MustCompile(`^[0-9a-f]{64}\.jar$`)
+var packPublishedName=regexp.MustCompile(`^[0-9a-f]{64}\.zip$`)
+
+func (s *Server) packFile(w http.ResponseWriter,r *http.Request,id auth.Identity) error {
+	name:=r.PathValue("file")
+	if !packPublishedName.MatchString(name){return model.Failure("invalid_request","资源包文件名无效")}
+	f,err:=s.Rooms.Assets.OpenPack(r.Context(),r.PathValue("id"),strings.TrimSuffix(name,".zip"));if err!=nil{return err}
+	return serveFile(w,r,f,"application/zip")
+}
 
 func (s *Server) hopFile(w http.ResponseWriter,r *http.Request,id auth.Identity) error {
 	mc,name:=r.PathValue("mc"),r.PathValue("name")

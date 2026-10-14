@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-P0、P1 通过。P2 的 encore 自动验收全部通过，节点集群验收待 seraph。P3/P4 已完成构建、142 项回归及 41 项附加测试、真实 API 与旧提交启动计划验证；真实进入待用户登录。P5 即将执行。P7 今晚不执行。
+P0、P1、P5 通过。P2 的 encore 自动验收全部通过，节点集群验收待 seraph。P3/P4 已完成构建、144 项回归及 41 项附加测试、真实 API 与旧提交启动计划验证；真实进入待用户登录。P6 正在验证恢复世界后启动。P7 今晚不执行。
 
 需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；本晚执行以 `directives/2026-10-15-decisions.md` 为准。
 
@@ -49,6 +49,14 @@ P0、P1 通过。P2 的 encore 自动验收全部通过，节点集群验收待 
 
 04:38 JST：生产 systemd 模板完成真实 Fabric 构建，耗时 30.60 秒、峰值内存 1.77 GiB；cgroup、全局构建锁、三个 jar 的 canonical/alias 字节及三次缓存复用均通过。P2 encore 验收完成。
 
+04:43 JST：plaza 发布 revision 1，重复上传保持 revision、摘要和创建时间；源世界 62 项文件及目录均保持原样。main 构建 attempt 3 包含服务端 chorus-hop，generation 4 已通过就绪核验。
+
+04:49 JST：生产更新通过全部保护检查，完整 Gradle 构建和两项 JUnit 通过。已启动游戏会话 `93485875-F577-4867-B560-FB732CF626C2`，累计启动次数 4/8。
+
+04:54 JST：游戏内目的地列表、main→plaza→main 往返、跨构建拒绝提示通过，两端 SLP 均记录 online=1。正常退出后资产房间已 closed，main 已 stopped 并保留 PVC；日志 `.work/logs/p5-client.log`。
+
+04:54 JST：plaza 编辑候选 promote 为 revision 2，重复 promote、下载摘要和源世界保留检查通过；Go build/vet/test 全部通过，日志 `.work/logs/p5-go-validation.log`。
+
 | 阶段 | 必需证据 | 当前状态 |
 | --- | --- | --- |
 | P0 | 集群、存储、构建、镜像实际启动、ruri 构建和测试、环境报告 | 通过 |
@@ -56,8 +64,8 @@ P0、P1 通过。P2 的 encore 自动验收全部通过，节点集群验收待 
 | P2 | 10 分钟回收、世界保留、节点调度及失联、controller 重启接管 | encore 全部通过；待 seraph 的调度与失联验收 |
 | P3 | 服务器页面自动进入、模组替换、明确错误、测试验证 | 自动化通过；新应用登录与真实进入待用户 |
 | P4 | 合并提交图、旧提交房间进入、失败日志 | 自动化通过；真实进入待用户 |
-| P5 | plaza 资产发布、游戏内往返 transfer、构建约束、资源包 | 发布与真实往返准备完成 |
-| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 等待 P5 验收 |
+| P5 | plaza 资产发布、游戏内往返 transfer、构建约束、资源包 | 通过；资源包 N/A |
+| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 真实同步、淘汰与恢复通过；正在验证恢复后的 Minecraft 启动 |
 
 ## 使用的默认值
 
