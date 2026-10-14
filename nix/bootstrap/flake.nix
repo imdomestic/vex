@@ -22,20 +22,41 @@
           }
         ];
       };
+      chorusPackage = retiredEncore.pkgs.callPackage ../package.nix {
+        vendorHash = retiredEncore.pkgs.lib.removeSuffix "\n" (builtins.readFile ../vendor-hash);
+      };
+      chorusEncore = retiredEncore.extendModules {
+        modules = [
+          ../module.nix
+          {
+            services.chorusd = {
+              enable = true;
+              package = chorusPackage;
+            };
+          }
+        ];
+      };
     in
     {
       nixosConfigurations.encore = retiredEncore;
       nixosConfigurations.encore-retired = retiredEncore;
+      nixosConfigurations.encore-chorus = chorusEncore;
       nixosModules.encore-k3s = { imports = k3sModules; };
       nixosModules.retire-legacy-minecraft = import ./retire-legacy-minecraft.nix;
+      nixosModules.chorusd = import ../module.nix;
       packages.x86_64-linux.default = retiredEncore.config.system.build.toplevel;
       packages.x86_64-linux.retired = retiredEncore.config.system.build.toplevel;
+      packages.x86_64-linux.chorusd = chorusPackage;
+      packages.x86_64-linux.chorus-system = chorusEncore.config.system.build.toplevel;
       checks.x86_64-linux.encore = retiredEncore.config.system.build.toplevel;
       checks.x86_64-linux.encore-retired = retiredEncore.config.system.build.toplevel;
+      checks.x86_64-linux.chorusd = chorusPackage;
+      checks.x86_64-linux.encore-chorus = chorusEncore.config.system.build.toplevel;
       bootstrapReport = {
         baseline = baseline.config.system.build.toplevel.outPath;
         system = retiredEncore.config.system.build.toplevel.outPath;
         retiredSystem = retiredEncore.config.system.build.toplevel.outPath;
+        chorusSystem = chorusEncore.config.system.build.toplevel.outPath;
         k3sVersion = encore.config.services.k3s.package.version;
         k3sCommand = encore.config.systemd.services.k3s.serviceConfig.ExecStart;
         firewallRules = encore.config.networking.firewall.extraInputRules;

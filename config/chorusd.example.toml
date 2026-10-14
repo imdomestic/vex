@@ -1,0 +1,76 @@
+[server]
+listen = ["100.64.0.43:8790", "10.1.2.137:8790"]
+public_base_url = "http://encore.inner.imdomestic.com:8790"
+internal_base_url = "http://10.1.2.137:8790"
+data_dir = "/srv/chorus"
+
+[auth]
+users_file = "/var/lib/chorusd/secrets/users.toml"
+signing_key_file = "/var/lib/chorusd/secrets/signing.key"
+
+[git]
+remote = "https://github.com/HCHogan/chorus.git"
+poll_interval = "60s"
+default_branch = "main"
+
+[minecraft]
+version = "26.3"
+java = 25
+# Headscale split DNS 配置完成后改为 chorus.internal。
+zone = "100-64-0-43.sslip.io"
+image = "itzg/minecraft-server:java25@sha256:7462fe34a56686719463ff898a674c1a1ce802988138d2bfdeff2507fb1644e8"
+whitelist = ["linWhite"]
+# 等待用户提供 hank 的 Minecraft 用户名。
+hank_whitelist = []
+
+[loaders.fabric]
+enabled = true
+gradle_task = ":fabric:assemble"
+artifact_glob = "fabric/build/libs/*.jar"
+artifact_exclude = ["*-sources.jar", "*-dev*.jar", "*-javadoc.jar"]
+loader_version_property = "fabric_loader_version"
+
+[[loaders.fabric.deps]]
+name = "fabric-api"
+url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/${fabric_version}/fabric-api-${fabric_version}.jar"
+side = "both"
+
+[loaders.neoforge]
+enabled = false
+
+[build]
+max_concurrent = 1
+cache_size = 20
+timeout = "20m"
+# worker 固定处理器数量、并发任务数量和 Gradle 堆大小。
+gradle_args = []
+jdk_home = "/nix/store/dasnfgbvb4nff68czbr0461hl924nbh7-openjdk-25.0.4.1+1"
+systemd_user = false
+lock_file = "/srv/chorus-build.lock"
+
+[rooms]
+namespace = "chorus-rooms"
+kubeconfig = "/var/lib/chorusd/kubeconfig"
+router_address = "100.64.0.43:25565"
+webhook_sources = ["10.42.0.0/16"]
+heap = "4G"
+memory_limit = "5Gi"
+max_running = { encore = 2, seraph = 4 }
+commit_idle = "10m"
+asset_idle = "10m"
+branch_idle = "10m"
+join_lease = "3m"
+start_timeout = "5m"
+default_seed = "empty"
+
+[archive]
+enabled = false
+keep_per_room = 5
+keep_days = 14
+tank_target = "tank:/srv/archive/chorus"
+tank_bwlimit = "5M"
+# 生产身份由用户提供；启用前继续保留全部热缓存文件。
+identity_file = ""
+
+[assets]
+world_scanner = "/var/lib/chorusd/world-scanner"

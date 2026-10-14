@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chorus-system
+  labels:
+    app.kubernetes.io/part-of: chorus-testbed
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chorus-rooms
+  labels:
+    app.kubernetes.io/part-of: chorus-testbed

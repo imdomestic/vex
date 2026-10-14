@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mc-router
+  namespace: chorus-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mc-router
+  namespace: chorus-rooms
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mc-router
+  namespace: chorus-rooms
+subjects:
+  - kind: ServiceAccount
+    name: mc-router
+    namespace: chorus-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mc-router
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chorusd
+  namespace: chorus-rooms
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chorusd
+  namespace: chorus-rooms
+rules:
+  - apiGroups: [""]
+    resources: [services, pods, pods/exec, pods/log, persistentvolumeclaims, secrets, events]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [statefulsets, statefulsets/scale]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chorusd
+  namespace: chorus-rooms
+subjects:
+  - kind: ServiceAccount
+    name: chorusd
+    namespace: chorus-rooms
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chorusd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chorusd-nodes
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chorusd-nodes
+subjects:
+  - kind: ServiceAccount
+    name: chorusd
+    namespace: chorus-rooms
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: chorusd-nodes
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chorusd-api
+  namespace: chorus-rooms
+  annotations:
+    kubernetes.io/service-account.name: chorusd
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chorusd-router
+  namespace: chorus-system
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chorusd-router
+  namespace: chorus-system
+subjects:
+  - kind: ServiceAccount
+    name: chorusd
+    namespace: chorus-rooms
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chorusd-router
