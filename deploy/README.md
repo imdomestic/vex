@@ -4,7 +4,7 @@
 
 1. 同步已经验证的源码，运行 `bash deploy/build-system.sh`。脚本构建 `encore-chorus`，保存 `.work/activation/candidate-system`、GC root 和 `dry-activate.log`。检查构建结果及服务差异，确认 k3s、数据库、SSH 与十二个旧 Minecraft 单元保持规定状态。
 2. 在 Mac 执行 `bash deploy/activate-from-mac.sh update /nix/store/<已审阅的系统路径>`。脚本通过内容校验确认本地与 encore 的 controller 源码一致，再重新构建并验证候选路径。源码或候选变化时立即退出，系统继续运行当前配置。
-3. 脚本保存 `/run/current-system`，通过 `systemd-run --on-active=600 --unit=chorus-revert` 安排旧系统的 `switch-to-configuration test`，随后对候选执行 `test`。
+3. 脚本确认没有正在运行的构建，并停止已经完成且为 `active/exited` 的构建单位，随后保存 `/run/current-system`。通过 `systemd-run --on-active=600 --unit=chorus-revert` 安排旧系统的 `switch-to-configuration test`，随后对候选执行 `test`。
 4. 使用新的 SSH 连接验证 `k3s`、`mysql`、`postgresql`、`chorusd`、`dnsmasq` 均为 active，encore 为 Ready，十二个旧 Minecraft 单元均为 masked/inactive。继续检查真实 API 鉴权健康请求、Mac 到 8790 的连通性、DNS UDP/TCP 查询。
 5. 全部检查通过后停止恢复 timer，设置持久系统 profile，再执行候选的 `switch`。脚本核对运行路径与 profile 相同，并写入 `.work/activation/persisted-system`。任何检查失败时保留自动恢复 timer，不执行持久切换。
 
