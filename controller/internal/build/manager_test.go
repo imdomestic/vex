@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -163,4 +164,19 @@ func TestWorkerRecordsRealCheckoutFailureAndReleasesLock(t *testing.T) {
 	if err = unix.Flock(int(first.Fd()), unix.LOCK_UN); err != nil { t.Fatal(err) }
 	if err = acquireLock(ctx, second); err != nil { t.Fatal(err) }
 	if err = unix.Flock(int(second.Fd()), unix.LOCK_UN); err != nil { t.Fatal(err) }
+}
+
+func TestPrepareOperationsRespectServiceLifecycle(t *testing.T) {
+	for _, test := range []struct { load, state string; operations []string }{
+		{"not-found", "inactive", nil},
+		{"loaded", "inactive", nil},
+		{"loaded", "failed", []string{"reset-failed"}},
+		{"loaded", "active", []string{"stop"}},
+	} {
+		operations, err := prepareOperations(test.load, test.state)
+		if err != nil || !reflect.DeepEqual(operations, test.operations) { t.Fatalf("%s/%s: %v %v", test.load, test.state, operations, err) }
+	}
+	for _, test := range [][2]string{{"masked", "inactive"}, {"error", "inactive"}, {"loaded", "activating"}, {"loaded", "deactivating"}, {"loaded", "reloading"}} {
+		if _, err := prepareOperations(test[0], test[1]); err == nil { t.Fatalf("accepted service state %v", test) }
+	}
 }

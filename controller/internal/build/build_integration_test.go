@@ -102,3 +102,36 @@ func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
 	}
 	t.Logf("verified build=%s attempt=%d files=%d modIds=%d; all bytes, cache requests and registered-room protection checked", id, manifest.Attempt, len(manifest.Files), len(manifest.ModIDs))
 }
+
+func TestRealHopPublicationPreservesIndependentContent(t *testing.T) {
+	jar := os.Getenv("CHORUS_IT_HOP_JAR")
+	if jar == "" { t.Skip("requires CHORUS_IT_HOP_JAR from the real Gradle build") }
+	m, _ := realManager(t)
+	directory := filepath.Join(m.cfg.Server.DataDir, "mods", "chorus-hop", "26.3")
+	if err := os.MkdirAll(directory, 0750); err != nil { t.Fatal(err) }
+	source := filepath.Join(directory, filepath.Base(jar))
+	if err := copyFile(jar, source); err != nil { t.Fatal(err) }
+	entry, published, err := m.hopArtifact("26.3")
+	if err != nil || entry == nil { t.Fatalf("publish real hop: %v", err) }
+	if entry.URL != "/v1/mods/chorus-hop/26.3/" + entry.SHA256 + ".jar" || published != filepath.Join(directory, "published", entry.SHA256 + ".jar") { t.Fatal("hop URL is not fixed by its digest") }
+	second, secondPath, err := m.hopArtifact("26.3")
+	if err != nil || !reflect.DeepEqual(entry, second) || published != secondPath { t.Fatalf("repeat publication: %+v %v", second, err) }
+	alias := filepath.Join(t.TempDir(), entry.Name)
+	if err = copyFile(published, alias); err != nil { t.Fatal(err) }
+	sourceInfo, err := os.Stat(source)
+	if err != nil { t.Fatal(err) }
+	publishedInfo, err := os.Stat(published)
+	if err != nil { t.Fatal(err) }
+	aliasInfo, err := os.Stat(alias)
+	if err != nil { t.Fatal(err) }
+	if os.SameFile(sourceInfo, publishedInfo) || os.SameFile(publishedInfo, aliasInfo) { t.Fatal("configured, published and attempt files must have independent storage") }
+	if err = os.Remove(source); err != nil { t.Fatal(err) }
+	for _, path := range []string{published, alias} {
+		digest, size, err := hashFile(path)
+		if err != nil || digest != entry.SHA256 || size != entry.Size { t.Fatalf("configured source removal changed %s: %v", path, err) }
+	}
+	if err = os.Chmod(published, 0640); err != nil { t.Fatal(err) }
+	if err = os.Truncate(published, entry.Size - 1); err != nil { t.Fatal(err) }
+	if err = copyFile(jar, source); err != nil { t.Fatal(err) }
+	if _, _, err = m.hopArtifact("26.3"); err == nil { t.Fatal("accepted a damaged published hop artifact") }
+}

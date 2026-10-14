@@ -10,6 +10,9 @@ project=$(cd "$(dirname "$0")/.." && pwd)
 export TMPDIR="$project/.work/temp"
 remote=/home/linwhite/chorus-testbed
 ssh_options=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
+install -d -m 0700 "$project/.work/activation"
+rsync -rcni "$project/controller/" "encore:$remote/controller/" >"$project/.work/activation/controller-source-diff"
+test ! -s "$project/.work/activation/controller-source-diff"
 ssh "${ssh_options[@]}" encore "bash $remote/deploy/build-system.sh"
 [[ $(ssh "${ssh_options[@]}" encore "cat $remote/.work/activation/candidate-system") == "$expected_candidate" ]]
 if [[ "$mode" == deploy ]]; then

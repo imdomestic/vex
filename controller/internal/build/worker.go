@@ -162,6 +162,7 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 		if err != nil { return err }
 		if hop != nil {
 			if names[hop.Name] { return fmt.Errorf("duplicate manifest filename %s", hop.Name) }
+			if err = copyFile(source, filepath.Join(outputDir, hop.Name)); err != nil { return err }
 			value.Files = append(value.Files, *hop)
 			ids, err := JarModIDs(source)
 			if err != nil { return err }

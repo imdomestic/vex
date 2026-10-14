@@ -220,7 +220,13 @@ func (m *Manager) launch(ctx context.Context, value model.Build) error {
 		command = exec.CommandContext(ctx, "systemd-run", args...)
 	} else {
 		if err := os.MkdirAll(filepath.Join(m.cfg.Server.DataDir, "work", value.ID, ".work"), 0750); err != nil { return err }
-		for _, operation := range []string{"stop", "reset-failed"} {
+		load, err := m.unitProperty(ctx, value, "LoadState")
+		if err != nil { return err }
+		state, err := m.unitProperty(ctx, value, "ActiveState")
+		if err != nil { return err }
+		operations, err := prepareOperations(load, state)
+		if err != nil { return err }
+		for _, operation := range operations {
 			output, err := exec.CommandContext(ctx, "systemctl", operation, m.unitName(value)).CombinedOutput()
 			if err != nil { return fmt.Errorf("prepare build service: %w: %s", err, strings.TrimSpace(string(output))) }
 		}
@@ -229,6 +235,28 @@ func (m *Manager) launch(ctx context.Context, value model.Build) error {
 	output, err := command.CombinedOutput()
 	if err != nil { return fmt.Errorf("start build service: %w: %s", err, strings.TrimSpace(string(output))) }
 	return nil
+}
+
+func (m *Manager) unitProperty(ctx context.Context, value model.Build, property string) (string, error) {
+	output, err := exec.CommandContext(ctx, "systemctl", "show", "--value", "--property=" + property, m.unitName(value)).CombinedOutput()
+	state := strings.TrimSpace(string(output))
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 4 && (state == "not-found" || state == "inactive") { return state, nil }
+		return "", fmt.Errorf("inspect build service %s: %w: %s", property, err, state)
+	}
+	return state, nil
+}
+
+func prepareOperations(load, state string) ([]string, error) {
+	if load == "not-found" && state == "inactive" { return nil, nil }
+	if load != "loaded" { return nil, fmt.Errorf("build service cannot start with LoadState=%s", load) }
+	switch state {
+	case "inactive": return nil, nil
+	case "failed": return []string{"reset-failed"}, nil
+	case "active": return []string{"stop"}, nil
+	default: return nil, fmt.Errorf("build service cannot start with ActiveState=%s", state)
+	}
 }
 
 func (m *Manager) fail(ctx context.Context, value model.Build, cause error) error {

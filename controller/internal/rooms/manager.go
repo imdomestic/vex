@@ -37,6 +37,7 @@ type Runtime struct {
 	Restart bool `json:"restart"`
 	WorldExists bool `json:"worldExists"`
 	SeedRestoreRequested bool `json:"seedRestoreRequested"`
+	ArchiveComplete bool `json:"archiveComplete"`
 }
 
 type Manager struct {
@@ -141,7 +142,7 @@ func (m *Manager) SyncBranches(ctx context.Context) error {
 		if room.Kind=="branch"&&room.Branch!=nil&&!seen[*room.Branch]&&room.Label!="finished"{
 			room.Label="finished"
 			rt,err:=m.runtime(ctx,room.ID);if err!=nil{return err}
-			if room.State=="stopped"&&room.Generation==0{room.State="closed"}else if room.State!="closed"{room.State="stopping";room.Phase="saving world"}
+			if room.State=="stopped"{room.State="closed";room.Phase="closed"}else if room.State!="closed"{room.State="stopping";room.Phase="saving world"}
 			if err=m.save(ctx,room,rt);err!=nil{return err}
 		}
 	}
@@ -305,7 +306,11 @@ func (m *Manager) Stop(ctx context.Context,id string,restart bool) (model.Room,i
 	room,err:=m.Get(ctx,id);if err!=nil{return room,0,err}
 	rt,err:=m.runtime(ctx,id);if err!=nil{return room,0,err}
 	if room.State=="lost"{return room,0,model.Failure("node_lost","无法确认失联节点的世界状态")}
-	if (room.State=="stopped"||room.State=="closed")&&!restart{return room,200,nil}
+	if room.State=="stopped"||room.State=="closed" {
+		if !restart{return room,200,nil}
+		result,status,err:=m.start(ctx,id,nil,auth.Identity{User:"controller"})
+		return result.Room,status,err
+	}
 	rt.Restart=restart
 	room.State="stopping";room.Phase="saving world";room.IdleSince=nil
 	if err=m.save(ctx,room,rt);err!=nil{return room,0,err}
@@ -319,9 +324,10 @@ func (m *Manager) Label(ctx context.Context,id,label string) (model.Room,int,err
 	room,err:=m.Get(ctx,id);if err!=nil{return room,0,err}
 	rt,err:=m.runtime(ctx,id);if err!=nil{return room,0,err}
 	room.Label=label
+	if label=="finished"{rt.Restart=false}
 	status:=200
 	if label=="finished"&&room.State!="closed"{
-		if room.Generation==0{room.State="closed";room.Phase="finished"}else{room.State="stopping";room.Phase="saving world";status=202}
+		if room.Generation==0||room.State=="stopped"{room.State="closed";room.Phase="closed"}else{room.State="stopping";room.Phase="saving world";status=202}
 	}
 	return room,status,m.save(ctx,room,rt)
 }

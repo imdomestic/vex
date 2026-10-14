@@ -214,10 +214,12 @@ func serveFile(w http.ResponseWriter,r *http.Request,f *os.File,contentType stri
 func (s *Server) buildFile(w http.ResponseWriter,r *http.Request,id auth.Identity) error {f,err:=s.Builds.OpenFile(r.Context(),r.PathValue("id"),r.PathValue("name"));if err!=nil{return err};return serveFile(w,r,f,"application/java-archive")}
 func (s *Server) dependency(w http.ResponseWriter,r *http.Request,id auth.Identity) error {f,err:=s.Builds.OpenDependency(r.Context(),r.PathValue("sha"));if err!=nil{return err};return serveFile(w,r,f,"application/java-archive")}
 
+var hopPublishedName=regexp.MustCompile(`^[0-9a-f]{64}\.jar$`)
+
 func (s *Server) hopFile(w http.ResponseWriter,r *http.Request,id auth.Identity) error {
 	mc,name:=r.PathValue("mc"),r.PathValue("name")
-	if !safeName(mc)||!safeName(name)||!strings.HasSuffix(name,".jar"){return model.Failure("invalid_request","文件路径无效")}
-	f,err:=os.Open(filepath.Join(s.Cfg.Server.DataDir,"mods","chorus-hop",mc,name));if err!=nil{return err}
+	if !safeName(mc)||!hopPublishedName.MatchString(name){return model.Failure("invalid_request","文件路径无效")}
+	f,err:=os.Open(filepath.Join(s.Cfg.Server.DataDir,"mods","chorus-hop",mc,"published",name));if err!=nil{return err}
 	return serveFile(w,r,f,"application/java-archive")
 }
 

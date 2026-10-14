@@ -97,9 +97,15 @@ func (c *Client) DeleteArchivedRoom(ctx context.Context, room model.Room, snapsh
 	job, err := c.api.BatchV1().Jobs(c.ns).Get(ctx, fmt.Sprintf("archive-%s-%d", room.ID, room.Generation), metav1.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) { return err }
 	if err == nil {
+		if !managed(job.Labels, room.ID) || job.Labels["chorus.dev/generation"] != strconv.FormatInt(room.Generation, 10) { return fmt.Errorf("archive Job identity mismatch") }
 		complete := false
 		for _, condition := range job.Status.Conditions { if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue { complete = true } }
 		if !complete { return fmt.Errorf("archive Job has not completed") }
+		ttl := int32(1)
+		if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != ttl {
+			job.Spec.TTLSecondsAfterFinished = &ttl
+			if _, err = c.api.BatchV1().Jobs(c.ns).Update(ctx, job, metav1.UpdateOptions{}); err != nil { return err }
+		}
 	}
 	pods, err := c.api.CoreV1().Pods(c.ns).List(ctx, metav1.ListOptions{LabelSelector: "chorus.dev/room="+room.ID})
 	if err != nil { return err }
@@ -143,5 +149,13 @@ if ! test -f "$archive"; then
   tar --create --gzip --file="${archive}.partial" --directory=/data world
   mv "${archive}.partial" "$archive"
 fi
-curl --fail --silent --show-error --request POST --header "Authorization: Bearer $CHORUS_ROOM_TOKEN" --header 'Content-Type: application/gzip' --data-binary "@$archive" "$UPLOAD_URL" --output /data/.work/snapshot-response.json
+if curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $CHORUS_ROOM_TOKEN" --header 'Content-Type: application/gzip' --data-binary "@$archive" "$UPLOAD_URL" --output /data/.work/snapshot-response.json; then
+  exit 0
+else
+  status=$?
+  if test -s /data/.work/snapshot-response.json; then
+    jq --raw-output '.error.message // "snapshot upload failed"' /data/.work/snapshot-response.json >&2
+  fi
+  exit "$status"
+fi
 `

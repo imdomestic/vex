@@ -51,7 +51,7 @@ func Validate(file,minecraft string) error {
 		if h.Size<0||expanded>64*1024*1024*1024{return fmt.Errorf("world archive exceeds expanded size limit")}
 		rel:=strings.TrimPrefix(name,"world/")
 		root,_,_:=strings.Cut(rel,"/")
-		allowed:=map[string]bool{"level.dat":true,"level.dat_old":true,"session.lock":true,"icon.png":true,"region":true,"entities":true,"poi":true,"data":true,"players":true,"playerdata":true,"advancements":true,"stats":true,"datapacks":true,"dimensions":true,"DIM-1":true,"DIM1":true}
+		allowed:=map[string]bool{"level.dat":true,"level.dat_old":true,"session.lock":true,"icon.png":true,"chorus-checkpoint.json":true,"region":true,"entities":true,"poi":true,"data":true,"players":true,"playerdata":true,"advancements":true,"stats":true,"datapacks":true,"dimensions":true,"DIM-1":true,"DIM1":true}
 		if !allowed[root]{return fmt.Errorf("unexpected world content %q",root)}
 		if name=="world/level.dat"{
 			if h.Size>16*1024*1024{return fmt.Errorf("level.dat exceeds size limit")}

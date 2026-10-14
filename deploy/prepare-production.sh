@@ -12,6 +12,8 @@ python=/nix/store/x8qgr4h05psniynzi7ifkbsahbqm4ir1-python3-3.13.15-env/bin/pytho
 sudo -n true
 test ! -e /srv/chorus
 test ! -e /var/lib/chorusd
+hop="$project/hop-mod/build/libs/chorus-hop-26.3-1.0.0.jar"
+printf '%s  %s\n' b00c3cfd027ccf66dd90fa4423bb8ccb7c689607fb3d4a480cc23b1a6a7f80dc "$hop" | sha256sum --check --status
 test -x "$(cat "$project/.work/activation/candidate-system")/bin/switch-to-configuration"
 systemctl --user list-units 'chorus-build*' --all --output=json >"$TMPDIR/user-build-units.json"
 jq -e 'all(.[]; .sub != "running" and .active != "activating" and .active != "deactivating")' "$TMPDIR/user-build-units.json" >/dev/null
@@ -36,6 +38,8 @@ sudo install -d -m 0750 -o root -g 980 /var/lib/chorusd/secrets
 sudo rsync -a --chown=980:980 --exclude=/secrets --exclude=/kubeconfig "$source_data/" /srv/chorus/
 sudo rsync -acni --chown=980:980 --exclude=/secrets --exclude=/kubeconfig "$source_data/" /srv/chorus/ >"$project/.work/activation/data-copy-diff"
 test ! -s "$project/.work/activation/data-copy-diff"
+sudo install -d -m 0700 -o 980 -g 980 /srv/chorus/mods/chorus-hop/26.3
+sudo install -m 0600 -o 980 -g 980 "$hop" /srv/chorus/mods/chorus-hop/26.3/chorus-hop-26.3-1.0.0.jar
 sudo install -m 0640 -o root -g 980 "$source_data/secrets/users.toml" /var/lib/chorusd/secrets/users.toml
 sudo install -m 0640 -o root -g 980 "$source_data/secrets/signing.key" /var/lib/chorusd/secrets/signing.key
 sudo install -m 0600 -o 980 -g 980 "$source_data/kubeconfig" /var/lib/chorusd/kubeconfig

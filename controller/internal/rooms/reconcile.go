@@ -50,7 +50,11 @@ func (m *Manager) reconcileRoom(ctx context.Context,room model.Room,nodes []mode
 		if err=m.save(ctx,room,rt);err!=nil{return err}
 	}
 	if err=m.Kube.SyncHost(ctx,room.ID,room.Host);err!=nil{return err}
-	if room.State=="stopped"||room.State=="closed"||room.State=="failed"||room.State=="lost"{return nil}
+	if room.State=="stopped"||room.State=="closed" {
+		if rt.Restart&&room.Label=="testing"{_,_,err:=m.start(ctx,room.ID,nil,auth.Identity{User:"controller"});return err}
+		return nil
+	}
+	if room.State=="failed"||room.State=="lost"{return nil}
 	now:=time.Now().UTC()
 	if room.Node!=nil {
 		ready:=false
@@ -166,10 +170,15 @@ func (m *Manager) reconcileStop(ctx context.Context,room model.Room,rt Runtime) 
 	snapshotID:=fmt.Sprintf("%s-g%d",room.ID,room.Generation)
 	err=m.DB.Get(ctx,"snapshot",snapshotID,&snapshot)
 	if err==nil{
+		if rt.ArchiveComplete{return m.finishStop(ctx,room,rt,&snapshot)}
 		if rt.Spec==nil{return fmt.Errorf("room archive has no generation specification")}
 		archive,archiveErr:=m.Kube.Archive(ctx,kube.ArchiveSpec{Room:room,RoomToken:rt.Spec.RoomToken})
 		if archiveErr!=nil{return archiveErr}
-		if archive.Complete{return m.finishStop(ctx,room,rt,&snapshot)}
+		if archive.Complete{
+			rt.ArchiveComplete=true
+			if err=m.save(ctx,room,rt);err!=nil{return err}
+			return m.finishStop(ctx,room,rt,&snapshot)
+		}
 		return nil
 	}
 	if !errors.Is(err,store.ErrNotFound){return err}
@@ -193,7 +202,7 @@ func (m *Manager) finishStop(ctx context.Context,room model.Room,rt Runtime,snap
 	if room.Kind=="branch"&&room.Label=="testing"{room.State="stopped"}
 	room.Phase=room.State;room.Players=[]model.Player{};room.IdleSince=nil;room.LastError=nil
 	rt.Spec=nil;rt.StartingAt=nil;rt.Online=0
-	restart:=rt.Restart;rt.Restart=false
+	restart:=rt.Restart&&room.Label=="testing";rt.Restart=restart
 	if err:=m.save(ctx,room,rt);err!=nil{return err}
 	if restart&&room.Label=="testing"{_,_,err:=m.start(ctx,room.ID,nil,auth.Identity{User:"controller"});return err}
 	return nil

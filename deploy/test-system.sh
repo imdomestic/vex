@@ -20,13 +20,17 @@ for name in GTL bedrock-proxy bingo lobby proxy speedrun; do
   for type in service socket; do
     unit="minecraft-server-$name.$type"
     [[ $(systemctl is-enabled "$unit") == masked ]]
-    [[ $(readlink "$candidate/etc/systemd/system/$unit") == /dev/null ]]
+    [[ $(readlink -f "$candidate/etc/systemd/system/$unit") == /dev/null ]]
   done
 done
 ! systemctl is-active --quiet chorus-revert.timer
 ! systemctl is-active --quiet chorus-revert.service
 systemctl list-units 'chorus-build@*' --all --output=json >"$TMPDIR/system-build-units.json"
 jq -e 'all(.[]; .sub != "running" and .active != "activating" and .active != "deactivating")' "$TMPDIR/system-build-units.json" >/dev/null
+while IFS= read -r unit; do
+  [[ "$unit" =~ ^chorus-build@fabric-[0-9a-f]{12}\.service$ ]]
+  sudo -n systemctl stop "$unit"
+done < <(jq -r '.[] | select(.active == "active" and .sub == "exited") | .unit' "$TMPDIR/system-build-units.json")
 sudo -n "$candidate/bin/switch-to-configuration" dry-activate >"$project/.work/activation/final-dry-activate.log" 2>&1
 printf '%s\n' "$old" >"$project/.work/activation/old-system"
 sudo -n systemd-run --on-active=600 --unit=chorus-revert "$old/bin/switch-to-configuration" test

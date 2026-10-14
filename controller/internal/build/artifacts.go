@@ -128,7 +128,9 @@ func (m *Manager) hopArtifact(minecraft string) (*model.BuildFile, string, error
 	var selected string
 	for _, entry := range entries {
 		if filepath.Ext(entry.Name()) != ".jar" { continue }
-		if entry.Type() & os.ModeSymlink != 0 || entry.IsDir() { return nil, "", fmt.Errorf("hop artifact must be a regular jar") }
+		info, err := entry.Info()
+		if err != nil { return nil, "", err }
+		if !info.Mode().IsRegular() { return nil, "", fmt.Errorf("hop artifact must be a regular jar") }
 		if selected != "" { return nil, "", fmt.Errorf("Minecraft version requires exactly one configured hop artifact") }
 		selected = filepath.Join(directory, entry.Name())
 	}
@@ -140,7 +142,36 @@ func (m *Manager) hopArtifact(minecraft string) (*model.BuildFile, string, error
 	if !found { return nil, "", fmt.Errorf("hop artifact does not contain chorus-hop") }
 	digest, size, err := hashFile(selected)
 	if err != nil { return nil, "", err }
-	return &model.BuildFile{Name: filepath.Base(selected), SHA256: digest, Size: size, Side: "server", URL: "/v1/mods/chorus-hop/" + url.PathEscape(minecraft) + "/" + url.PathEscape(filepath.Base(selected))}, selected, nil
+	published := filepath.Join(directory, "published", digest + ".jar")
+	if err = publishHop(selected, published, digest, size); err != nil { return nil, "", err }
+	return &model.BuildFile{Name: filepath.Base(selected), SHA256: digest, Size: size, Side: "server", URL: "/v1/mods/chorus-hop/" + url.PathEscape(minecraft) + "/" + digest + ".jar"}, published, nil
+}
+
+func publishHop(source, target, expectedDigest string, expectedSize int64) error {
+	info, err := os.Lstat(target)
+	if err == nil {
+		if !info.Mode().IsRegular() { return fmt.Errorf("published hop artifact must be a regular jar") }
+		digest, size, err := hashFile(target)
+		if err != nil { return err }
+		if digest != expectedDigest || size != expectedSize { return fmt.Errorf("published hop artifact checksum mismatch") }
+		return nil
+	}
+	if !os.IsNotExist(err) { return err }
+	if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil { return err }
+	staging, err := os.MkdirTemp(filepath.Dir(target), ".publishing-")
+	if err != nil { return err }
+	defer os.RemoveAll(staging)
+	path := filepath.Join(staging, "artifact.jar")
+	if err = copyFile(source, path); err != nil { return err }
+	digest, size, err := hashFile(path)
+	if err != nil { return err }
+	if digest != expectedDigest || size != expectedSize { return fmt.Errorf("configured hop artifact changed during publication") }
+	if err = os.Chmod(path, 0440); err != nil { return err }
+	if err = os.Link(path, target); err != nil { return err }
+	directory, err := os.Open(filepath.Dir(target))
+	if err != nil { return err }
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func JarModIDs(path string) ([]string, error) {

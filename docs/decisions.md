@@ -12,8 +12,9 @@
 
 ## 2026-10-15：Gradle 进程组限制
 
-构建队列串行执行，使用独立 systemd 服务承载每次 Gradle 构建；服务设置 MemoryHigh=5G、MemoryMax=6G、CPUQuota=200%。
+构建队列串行执行，使用 systemd 模板 chorus-build@fabric-<12 位 SHA>.service 承载每次 Gradle 构建；服务设置 MemoryHigh=5G、MemoryMax=6G、CPUQuota=200%。
 Java ActiveProcessorCount=2、Gradle workers=2、堆 1536m，限制覆盖所有子进程；控制器恢复时接管已有任务，防止并行重复构建。
+chorusd 通过仅允许该模板 start、stop、reset-failed 的 polkit 规则管理构建，模板中的执行程序与资源限制由 Nix module 固定。
 
 ## 2026-10-15：部署地址和数据
 
@@ -112,6 +113,26 @@ Gradle 使用 P0 已经真实生成的 Gradle/NeoForm 缓存；Fabric 任务继�
 
 测试沿用 encore 的现有 SSH 身份，并使用 Mac 已信任的 tank 主机公钥进行严格校验；生产同步继续关闭。
 断点续传验收只中断测试使用的 SSH 传输连接，随后重试并核对远端摘要与大小；测试文件永久保留在独立 it 时间戳目录。
+
+## 2026-10-15：容量实测
+
+encore 同时运行两个 ready 房间与一次 Fabric 构建时，14 次重叠采样的 MemAvailable 最低为 10.80 GiB，构建并发始终为 1。
+因此 encore 的 max_running 保持 2；seraph 的配置容量保持 4，集群验收等待节点加入。
+
+## 2026-10-15：Chorus 世界检查点
+
+世界归档和恢复保留根目录的 chorus-checkpoint.json，它由上游 Chorus 在正常停止时写入，用于继续检查点生命周期。
+验收使用真实停止后的 Minecraft 世界归档，检查 level.dat、世界版本及检查点文件均可读取。
+
+## 2026-10-15：临时世界归档任务清理
+
+commit 与 asset 的快照校验成功、归档 Job 完成后，将该 Job 的 TTL 缩短为一秒，由 Kubernetes 正常清理其 Pod 并释放 PVC 引用。
+只有经过完整快照验证的临时世界进入清理流程；branch 的世界 PVC 持续保留。
+
+## 2026-10-15：hop 产物固定内容
+
+hop 的 canonical 下载文件名采用 SHA-256，文件保存在对应 Minecraft 版本的 published 目录；每个 Build attempt 另保存所使用的 jar。
+该方式保证构建文件别名与 canonical URL 一致，并使后续 hop 更新保留既有构建的下载内容。
 
 ## 2026-10-14：Chorus 来源
 

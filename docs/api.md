@@ -209,12 +209,14 @@ force 的处理：queued/building 复用当前尝试；failed 创建下一尝试
 | --- | --- |
 | `GET /v1/builds/{buildId}/files/{name}` | 200、`application/java-archive`，manifest 中该文件的完整字节 |
 | `GET /v1/deps/{sha256}` | 200、`application/java-archive`，内容寻址依赖 |
-| `GET /v1/mods/chorus-hop/{mc}/{file}` | 200、`application/java-archive`，固定 hop 版本 |
+| `GET /v1/mods/chorus-hop/{mc}/{file}` | 200、`application/java-archive`；file 为 `<sha256>.jar`，固定 hop 内容 |
 | `GET /v1/assets/{id}/revisions/{rev}/download` | 200、`application/gzip`，顶层为 world/ 的完整 tar.gz |
 | `GET /v1/packs/{id}/{rev}.zip` | 200、`application/zip`，固定资源包字节 |
 | `GET /v1/snapshots/{id}/download` | 200、`application/gzip`，固定快照字节 |
 
 所有文件发布前验证大小及摘要，调用者下载后也验证。不存在的对象或文件返回 404；快照、资产或资源包仅在 tank、尚无本地完整文件时返回 `409 archive_failed`。文件被下载或用于初始化世界期间受保留保护。准备中的 build 文件不可下载。
+
+chorus-hop 的发布文件按 SHA-256 独立保存，每个 Build attempt 同时保留对应 jar，`/v1/builds/{id}/files/{name}` 与 manifest 的 canonical URL 返回相同字节。更换配置中的 hop jar 只影响新 attempt，已经发布的下载路径保持原内容。
 
 资产 archived 状态约束进入行为；已经本地可用的固定 revision 仍按下载授权提供。历史资产 revision 下载需要文件在本地可用。资产恢复操作针对 latestRev。
 
@@ -337,7 +339,7 @@ ready 的进入许可来自已核验的 Room 当前状态。客户端按 §2.2 �
 
 `POST /v1/assets/{id}/revisions` 使用 multipart/form-data，包含两个命名 part：world 为 `application/gzip` 的 world.tar.gz 原始字节；asset 为 `application/json` 的 AssetMetadata。asset.id 必须与路径一致，resourcePack 非空时必须指向已经发布且可用的固定 PackRevision。
 
-归档顶层为 world/，必须包含有效 MC 26.3 的 level.dat，校验存在的维度及区块结构，包括 dimensions/minecraft/overworld/region。拒绝目录穿越、链接、特殊文件和原始解包资源。发布工具拒绝 `/home/linwhite/d2-assets/sensitive` 及其解析后的子路径。命名空间来自实际扫描，按 §2.4 填写。
+归档顶层为 world/，必须包含有效 MC 26.3 的 level.dat，校验存在的维度及区块结构，包括 dimensions/minecraft/overworld/region。Chorus 在世界根目录生成的 chorus-checkpoint.json 随世界完整保存。拒绝目录穿越、链接、特殊文件和原始解包资源。发布工具拒绝 `/home/linwhite/d2-assets/sensitive` 及其解析后的子路径。命名空间来自实际扫描，按 §2.4 填写。
 
 服务端计算世界文件 SHA-256，与该资产 latestRev 的世界摘要比较。相同时返回 `200 +` 已有 AssetRevision，保留原 revision 和元数据；不同时原子分配下一个整数 revision，返回 `201 + AssetRevision`。新资产从 `"1"` 开始。并发发布在同一资产的提交顺序中执行摘要判断和编号，不产生重复编号。
 
