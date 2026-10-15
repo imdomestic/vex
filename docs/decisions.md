@@ -123,6 +123,7 @@ encore 同时运行两个 ready 房间与一次 Fabric 构建时，14 次重叠�
 ## 2026-10-15 第二轮：Ruri 公开仓库
 
 用户已通过 GitHub Fork 创建 public 的 imdomestic/ruri-chorus，保留 upstream 并添加 origin。首次推送前扫描 dev、P3、P4 全部分支完整历史，包括 SSE、文档、日志、签名 URL 与凭据；有实际敏感内容时停止推送。
+用户随后明确要求先执行推送；完整复扫通过后，三个分支已通过一次原子推送发布并核对远端 SHA。指定目的地 GUI 验收继续单独记录。
 
 ## 2026-10-15 第二轮：独立应用 profile 与旧系统保留
 

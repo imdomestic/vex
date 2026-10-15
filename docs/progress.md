@@ -4,7 +4,9 @@
 
 ## 当前阶段
 
-第二轮 B–G 通过：服务端修复、系统迁移、seraph、split DNS、生产归档与 d2-map-dev 合并均完成。A 指定房间 GUI 验收待用户，H 首次推送随之等待；全部待推送历史的凭据扫描通过。详情见 `reports/2026-10-15-round2.md`。
+第二轮 B–H 通过：服务端修复、系统迁移、seraph、split DNS、生产归档、d2-map-dev 合并和 Ruri 公开仓库推送均完成。A 指定房间 GUI 验收待用户。详情见 `reports/2026-10-15-round2.md`。
+
+21:21 JST：按用户指令完成 Ruri 首次推送；dev、P3、P4 的 329 个提交和 4,203 个文件对象完整复扫通过，远端三个分支 SHA 与扫描记录一致。证据 `/Users/linwhite/ruri-chorus/.work/round2-h-push.json`。
 
 19:42 JST：tank 生产归档已验证 12 个快照与 plaza 的 3 个版本，共 30 个文件；远端 SHA256、大小和验证时间均通过。nix-config 已推送至 `4b80889`。证据 `.work/round2-f/production-archive-verification.json`。
 
@@ -93,7 +95,7 @@
 
 ## 需要用户确认
 
-- 待用户：独立 Ruri Chorus 在服务器页进入 main-fabric，并从 Git 页进入 cb7f59da；完成后推送已扫描的 ruri 分支。
+- 待用户：独立 Ruri Chorus 在服务器页进入 main-fabric，并从 Git 页进入 cb7f59da，核对实际目的地。
 - seraph 下次真实关机时观察世界保存；自动化已验证 kubelet 宽限配置和两条恢复流程。
 - chorus 来源迁移与 chorus-testbed 的 GitHub 远端等待 HCHogan 完成迁移；hank 事项按第二轮指令暂不处理。
 
