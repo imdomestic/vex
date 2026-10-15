@@ -220,6 +220,9 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) step(ctx context.Context) error {
+	if err := m.prune(ctx); err != nil {
+		return err
+	}
 	values, err := m.List(ctx)
 	if err != nil {
 		return err
@@ -256,7 +259,7 @@ func (m *Manager) step(ctx context.Context) error {
 		}
 		return nil
 	}
-	return m.prune(ctx)
+	return nil
 }
 
 func (m *Manager) unitName(value model.Build) string {
@@ -412,7 +415,17 @@ func (m *Manager) prune(ctx context.Context) error {
 		}
 		ready := []model.Build{}
 		times := map[string]time.Time{}
+		failedCutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
 		for _, value := range values {
+			if value.Status == "failed" && value.FinishedAt != nil && !value.FinishedAt.After(failedCutoff) {
+				if err = tx.Delete(ctx, "build", value.ID); err != nil {
+					return err
+				}
+				if err = tx.Delete(ctx, "build_access", value.ID); err != nil {
+					return err
+				}
+				continue
+			}
 			if value.Status != "ready" {
 				continue
 			}

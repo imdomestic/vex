@@ -33,6 +33,11 @@ type Runtime struct {
 	StoppedAt            *time.Time     `json:"stoppedAt"`
 	LastProbe            *time.Time     `json:"lastProbe"`
 	NodeMissingSince     *time.Time     `json:"nodeMissingSince"`
+	PodNotReadySince     *time.Time     `json:"podNotReadySince"`
+	LostFrom             string         `json:"lostFrom"`
+	Failure              *model.Error   `json:"failure"`
+	FailureLogsCaptured  bool           `json:"failureLogsCaptured"`
+	ReconcileError       bool           `json:"reconcileError"`
 	Online               int            `json:"online"`
 	Restart              bool           `json:"restart"`
 	WorldExists          bool           `json:"worldExists"`
@@ -42,6 +47,7 @@ type Runtime struct {
 
 type Manager struct {
 	mu      sync.Mutex
+	wake    reconcileSignals
 	Cfg     config.Config
 	DB      *store.Store
 	Git     *gitmirror.Mirror
@@ -532,6 +538,7 @@ func (m *Manager) Stop(ctx context.Context, id string, restart bool) (model.Room
 		return result.Room, status, err
 	}
 	rt.Restart = restart
+	rt.Failure = nil
 	room.State = "stopping"
 	room.Phase = "saving world"
 	room.IdleSince = nil
@@ -558,6 +565,7 @@ func (m *Manager) Label(ctx context.Context, id, label string) (model.Room, int,
 	room.Label = label
 	if label == "finished" {
 		rt.Restart = false
+		rt.Failure = nil
 	}
 	status := 200
 	if label == "finished" && room.State != "closed" {
@@ -664,14 +672,20 @@ func SnapshotPath(data string, snapshot model.Snapshot) string {
 }
 
 func (m *Manager) Fail(ctx context.Context, room model.Room, rt Runtime, code, message string) error {
-	room.State = "failed"
-	room.Phase = "failed"
-	room.LastError = model.Failure(code, message)
-	return m.save(ctx, room, rt)
+	return m.failWithError(ctx, room, rt, model.Failure(code, message))
 }
 
 func (m *Manager) Log(ctx context.Context, id string) (string, error) {
-	if _, err := m.Get(ctx, id); err != nil {
+	room, err := m.Get(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var saved string
+	err = m.DB.Get(ctx, "room_failure_log", fmt.Sprintf("%s:%d", id, room.Generation), &saved)
+	if err == nil {
+		return saved, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}
 	return m.Kube.Logs(ctx, id, 200)

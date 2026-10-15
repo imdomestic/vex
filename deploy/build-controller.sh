@@ -6,6 +6,7 @@ export GOCACHE="$project/.work/go-cache"
 export GOMODCACHE="$project/.work/go-modcache"
 export GOMAXPROCS=2
 go_cmd=/nix/store/hfb2fkwkkr6jdcg2ggibvf1zablw7i57-go-1.26.7/bin/go
+GOFMT="$(dirname "$go_cmd")/gofmt" bash "$project/deploy/check-go-format.sh"
 install -d -m 0700 "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$project/.work/bin" "$project/.work/logs"
 cd "$project/controller"
 "$go_cmd" test -p 2 ./...

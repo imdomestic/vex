@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -143,8 +142,8 @@ func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
-		if err := m.Step(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("archive queue failed", "error", err)
+		if err := m.Step(ctx); err != nil {
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -172,11 +171,15 @@ func (m *Manager) Step(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, task := range tasks {
+		if ctx.Err() != nil {
+			return errors.Join(append(failures, ctx.Err())...)
+		}
 		if task.Status == "verified" {
 			continue
 		}
-		if task.Status == "failed" && time.Since(task.UpdatedAt) < time.Minute {
+		if task.Status == "failed" && time.Since(task.UpdatedAt) < retryDelay(task.Attempt) {
 			continue
 		}
 		task.Status = "running"
@@ -205,7 +208,7 @@ func (m *Manager) Step(ctx context.Context) error {
 			return err
 		}
 		if transferErr != nil {
-			return transferErr
+			failures = append(failures, fmt.Errorf("archive task %s: %w", task.ID, transferErr))
 		}
 	}
 	if err = m.markSnapshots(ctx); err != nil {
@@ -215,9 +218,21 @@ func (m *Manager) Step(ctx context.Context) error {
 		return err
 	}
 	if m.Assets != nil {
-		return m.Assets.EvictArchived(ctx)
+		if err = m.Assets.EvictArchived(ctx); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 	}
-	return nil
+	return errors.Join(failures...)
+}
+
+func retryDelay(attempt int) time.Duration {
+	if attempt <= 1 {
+		return time.Minute
+	}
+	if attempt > 6 {
+		return time.Hour
+	}
+	return time.Minute << (attempt - 1)
 }
 
 func (m *Manager) markSnapshots(ctx context.Context) error {

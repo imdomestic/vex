@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 project=$(cd "$(dirname "$0")/.." && pwd)
+GOFMT=/nix/store/hfb2fkwkkr6jdcg2ggibvf1zablw7i57-go-1.26.7/bin/gofmt bash "$project/deploy/check-go-format.sh"
 export TMPDIR="$project/.work/temp"
 export GOCACHE="$project/.work/go-cache"
 export GOMODCACHE="$project/.work/go-modcache"

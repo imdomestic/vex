@@ -270,3 +270,50 @@ func TestPrepareOperationsRespectServiceLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedBuildRetentionRemovesLogsAfterSevenDays(t *testing.T) {
+	m, commits := realManager(t)
+	ctx := context.Background()
+	values := []model.Build{}
+	for i, sha := range commits[:2] {
+		value, _, err := m.Request(ctx, sha, "fabric", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = Worker(ctx, m.cfg, m.db, m.mirror, value.ID); err == nil {
+			t.Fatal("source without build configuration succeeded")
+		}
+		value, err = m.Get(ctx, value.ID)
+		if err != nil || value.Status != "failed" || value.FinishedAt == nil {
+			t.Fatalf("worker failure: %s %v", value.Status, err)
+		}
+		if i == 0 {
+			expired := value.FinishedAt.Add(-8 * 24 * time.Hour)
+			value.FinishedAt = &expired
+			if err = m.db.Put(ctx, "build", value.ID, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		values = append(values, value)
+	}
+	if err := m.prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.Get(ctx, values[0].ID)
+	requireCode(t, err, "not_found")
+	if _, err = os.Stat(m.attemptDir(values[0])); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired logs remain: %v", err)
+	}
+	if _, err = m.Get(ctx, values[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	log, err := m.OpenLog(ctx, values[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Close()
+	next, created, err := m.Request(ctx, commits[0], "fabric", false)
+	if err != nil || !created || next.Attempt != values[0].Attempt+1 {
+		t.Fatalf("attempt continuity: %d %v %v", next.Attempt, created, err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/imdomestic/chorus-testbed/controller/internal/model"
 )
@@ -21,6 +22,56 @@ func git(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func TestUnavailableRemotePreservesCachedHistoryAndEmptyMirror(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	git(t, root, "init", "--initial-branch=main", source)
+	sha := commit(t, source, "data.txt", "cached source")
+	cached, err := New(source, filepath.Join(root, "cached.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cached.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = cached.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(source, source+"-offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err = cached.Refresh(ctx); err == nil {
+		t.Fatal("unavailable remote accepted")
+	}
+	if err = cached.VerifyCommit(ctx, sha); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := cached.Branches(ctx)
+	if err != nil || len(refs) != 1 || refs[0].Head != sha {
+		t.Fatalf("cached refs: %+v %v", refs, err)
+	}
+	empty, err := New("http://127.0.0.1:1/unreachable.git", filepath.Join(root, "empty.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = empty.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = empty.Refresh(ctx); err == nil {
+		t.Fatal("unreachable remote accepted")
+	}
+	refs, err = empty.Branches(ctx)
+	if err != nil || len(refs) != 0 {
+		t.Fatalf("empty mirror: %+v %v", refs, err)
+	}
+	var failure *model.Error
+	if err = empty.VerifyCommit(ctx, sha); !errors.As(err, &failure) || failure.Code != "not_found" || !strings.Contains(failure.Message, "remote refresh") {
+		t.Fatalf("missing source error: %v", err)
+	}
 }
 
 func commit(t *testing.T, repo, filename, content string) string {

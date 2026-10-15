@@ -18,23 +18,34 @@ import (
 func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	gitTicker := time.NewTicker(config.Duration(m.Cfg.Git.PollInterval))
-	defer gitTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-gitTicker.C:
-			if err := m.Refresh(ctx); err != nil {
-				slog.Error("git refresh failed", "error", err)
-			}
 		case <-ticker.C:
 			if err := m.Reconcile(ctx); err != nil {
+				var local *roomReconcileErrors
+				if !errors.As(err, &local) {
+					return err
+				}
+				slog.Error("room reconcile failed", "error", err)
+			}
+		case <-m.wake.channel():
+			if err := m.Reconcile(ctx); err != nil {
+				var local *roomReconcileErrors
+				if !errors.As(err, &local) {
+					return err
+				}
 				slog.Error("room reconcile failed", "error", err)
 			}
 		}
 	}
 }
+
+type roomReconcileErrors struct{ cause error }
+
+func (e *roomReconcileErrors) Error() string { return e.cause.Error() }
+func (e *roomReconcileErrors) Unwrap() error { return e.cause }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
 	m.mu.Lock()
@@ -47,21 +58,56 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	hosts, forceAll := m.wake.take()
+	var failures []error
+	persistenceFailed := false
 	for _, room := range rooms {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err = m.reconcileRoom(ctx, room, nodes); err != nil {
-			return fmt.Errorf("room %s: %w", room.ID, err)
+		roomContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err = m.reconcileRoom(roomContext, room, nodes, forceAll || hosts[room.Host])
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if saveErr := m.recordReconcileError(ctx, room.ID, err); saveErr != nil {
+				persistenceFailed = true
+				failures = append(failures, fmt.Errorf("room %s error persistence: %w", room.ID, saveErr))
+			}
+			failures = append(failures, fmt.Errorf("room %s reconciliation failed", room.ID))
 		}
 	}
-	return nil
+	if len(failures) == 0 {
+		return nil
+	}
+	if persistenceFailed {
+		return errors.Join(failures...)
+	}
+	return &roomReconcileErrors{cause: errors.Join(failures...)}
 }
 
-func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []model.Node) error {
+func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []model.Node, forceProbe bool) error {
 	rt, err := m.runtime(ctx, room.ID)
 	if err != nil {
 		return err
+	}
+	if rt.ReconcileError {
+		rt.ReconcileError = false
+		room.LastError = nil
+		if err = m.save(ctx, room, rt); err != nil {
+			return err
+		}
+	}
+	if room.State == "failed" {
+		if rt.Failure == nil {
+			rt.Failure = room.LastError
+			if rt.Failure == nil {
+				rt.Failure = model.Failure("start_timeout", "服务器启动失败")
+			}
+		}
+		return m.reconcileFailure(ctx, room, rt)
 	}
 	if room.Host != room.ID+"."+m.Cfg.Minecraft.Zone {
 		room.Host = room.ID + "." + m.Cfg.Minecraft.Zone
@@ -79,9 +125,6 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		}
 		return nil
 	}
-	if room.State == "failed" || room.State == "lost" {
-		return nil
-	}
 	now := time.Now().UTC()
 	if room.Node != nil {
 		ready := false
@@ -95,6 +138,9 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 				rt.NodeMissingSince = &now
 			}
 			if now.Sub(*rt.NodeMissingSince) >= 60*time.Second {
+				if room.State != "lost" {
+					rt.LostFrom = room.State
+				}
 				room.State = "lost"
 				room.Phase = "node unavailable"
 				room.LastError = model.Failure("node_lost", "节点持续不可用超过 60 秒")
@@ -102,6 +148,29 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			return m.save(ctx, room, rt)
 		}
 		rt.NodeMissingSince = nil
+	}
+	if room.State == "lost" {
+		status, err := m.Kube.ObserveRoom(ctx, room.ID)
+		if err != nil {
+			return err
+		}
+		if rt.Failure != nil {
+			return m.reconcileFailure(ctx, room, rt)
+		}
+		resume := lostRecoveryState(room, rt, status) == "starting"
+		room.State, room.Phase = "stopping", "recovering lost room"
+		if resume {
+			room.State, room.Phase = "starting", "re-verify"
+			rt.StartingAt = &now
+		}
+		room.LastError, room.IdleSince = nil, nil
+		rt.LastProbe, rt.PodNotReadySince, rt.LostFrom = nil, nil, ""
+		if err = m.save(ctx, room, rt); err != nil {
+			return err
+		}
+	}
+	if rt.Failure != nil {
+		return m.reconcileFailure(ctx, room, rt)
 	}
 	if room.State == "stopping" || room.State == "archiving" {
 		return m.reconcileStop(ctx, room, rt)
@@ -116,17 +185,12 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 				var restoreErr error
 				snapshot, _, restoreErr = m.Archive.RequestSnapshotRestore(ctx, snapshot.ID)
 				if restoreErr != nil {
-					room.State = "failed"
-					room.Phase = "seed restore failed"
-					room.LastError = &model.Error{Code: "archive_failed", Message: restoreErr.Error(), Details: &model.ErrorDetails{SnapshotID: room.SeedResolved.ID}}
-					return m.save(ctx, room, rt)
+					return m.failWithError(ctx, room, rt, &model.Error{Code: "archive_failed", Message: "种子快照恢复失败", Details: &model.ErrorDetails{SnapshotID: room.SeedResolved.ID}})
 				}
 				rt.SeedRestoreRequested = true
 			}
 			if snapshot.Restore != nil && snapshot.Restore.Status == "failed" {
-				room.State = "failed"
-				room.Phase = "seed restore failed"
-				room.LastError = &model.Error{Code: "archive_failed", Message: "种子快照恢复失败", Details: &model.ErrorDetails{SnapshotID: snapshot.ID}}
+				return m.failWithError(ctx, room, rt, &model.Error{Code: "archive_failed", Message: "种子快照恢复失败", Details: &model.ErrorDetails{SnapshotID: snapshot.ID}})
 			} else {
 				room.State = "queued"
 				room.Phase = "restoring seed"
@@ -185,10 +249,13 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 	if err != nil {
 		return err
 	}
-	if room.State == "ready" && rt.LastProbe != nil && now.Sub(*rt.LastProbe) < 15*time.Second {
-		return nil
+	if status.PodReady {
+		rt.PodNotReadySince = nil
 	}
 	if status.Ready && status.Generation == room.Generation && status.BuildID == room.BuildID {
+		if room.State == "ready" && !forceProbe && rt.LastProbe != nil && now.Sub(*rt.LastProbe) < 15*time.Second {
+			return m.save(ctx, room, rt)
+		}
 		probe, probeErr := slp.Probe(ctx, m.Cfg.Rooms.RouterAddress, room.Host, room.Port)
 		rt.LastProbe = &now
 		if probeErr == nil && slp.Matches(probe, room) {
@@ -220,29 +287,36 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			}
 			return m.save(ctx, room, rt)
 		}
+		room.State, room.Phase = "starting", "route unavailable"
+		room.IdleSince, room.LastError = nil, nil
+		return m.save(ctx, room, rt)
 	}
-	if room.State == "ready" {
-		room.State = "starting"
-		room.Phase = "re-verify"
-		rt.StartingAt = &now
-		room.IdleSince = nil
+	room.State, room.IdleSince = "starting", nil
+	if status.PodReady {
+		room.Phase = "verifying Pod identity"
+		return m.save(ctx, room, rt)
 	}
-	if rt.StartingAt != nil && now.Sub(*rt.StartingAt) >= config.Duration(m.Cfg.Rooms.StartTimeout) {
-		logs, logErr := m.Kube.Logs(ctx, room.ID, 200)
-		if logErr == nil {
-			if err = m.DB.Put(ctx, "room_failure_log", fmt.Sprintf("%s:%d", room.ID, room.Generation), logs); err != nil {
-				return err
-			}
-		}
-		return m.Fail(ctx, room, rt, "start_timeout", "服务器未在启动期限内通过 Pod 与路由身份验证")
+	if rt.PodNotReadySince == nil {
+		rt.PodNotReadySince = &now
 	}
-	if room.Phase != "re-verify" {
-		room.Phase = status.Phase
-		if room.Phase == "" {
-			room.Phase = "waiting for server"
-		}
+	if now.Sub(*rt.PodNotReadySince) >= config.Duration(m.Cfg.Rooms.StartTimeout) {
+		return m.Fail(ctx, room, rt, "start_timeout", "Pod 连续未就绪超过启动期限")
+	}
+	room.Phase = status.Phase
+	if room.Phase == "" {
+		room.Phase = "waiting for server"
 	}
 	return m.save(ctx, room, rt)
+}
+
+func lostRecoveryState(room model.Room, rt Runtime, status kube.RoomStatus) string {
+	if room.Label == "finished" || rt.LostFrom == "stopping" || rt.LostFrom == "archiving" {
+		return "stopping"
+	}
+	if status.Ready && status.Generation == room.Generation && status.BuildID == room.BuildID {
+		return "starting"
+	}
+	return "stopping"
 }
 
 func (m *Manager) chooseNode(ctx context.Context, room model.Room, nodes []model.Node) (string, error) {
@@ -252,7 +326,7 @@ func (m *Manager) chooseNode(ctx context.Context, room model.Room, nodes []model
 	}
 	used := map[string]int{}
 	for _, r := range rooms {
-		if r.ID != room.ID && r.Node != nil && r.State != "closed" && r.State != "stopped" && r.State != "lost" {
+		if r.ID != room.ID && r.Node != nil && r.State != "closed" && r.State != "stopped" && r.State != "lost" && r.State != "failed" {
 			used[*r.Node]++
 		}
 	}
@@ -299,8 +373,11 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 		if status.PodExists {
 			if room.Phase != "waiting for Pod exit" {
 				if status.Ready {
-					if _, err = m.Kube.RCON(ctx, room.ID, "save-all flush"); err != nil {
-						return err
+					saveContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+					_, err = m.Kube.RCON(saveContext, room.ID, "save-all flush")
+					cancel()
+					if err != nil {
+						slog.Warn("room save command unavailable; continuing graceful Pod termination", "room", room.ID)
 					}
 				}
 				if err = m.Kube.ScaleRoom(ctx, room.ID, 0); err != nil {
@@ -387,6 +464,8 @@ func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, s
 	room.LastError = nil
 	rt.Spec = nil
 	rt.StartingAt = nil
+	rt.PodNotReadySince, rt.NodeMissingSince, rt.LastProbe = nil, nil, nil
+	rt.Failure, rt.LostFrom = nil, ""
 	rt.Online = 0
 	restart := rt.Restart && room.Label == "testing"
 	rt.Restart = restart

@@ -26,6 +26,7 @@ import (
 	"github.com/imdomestic/chorus-testbed/controller/internal/rooms"
 	"github.com/imdomestic/chorus-testbed/controller/internal/slp"
 	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/chorus-testbed/controller/internal/supervisor"
 )
 
 func main() {
@@ -104,7 +105,7 @@ func run() error {
 	if command != "serve" {
 		return fmt.Errorf("unknown command %q", command)
 	}
-	if err = mirror.Refresh(ctx); err != nil {
+	if err = mirror.Initialize(ctx); err != nil {
 		return err
 	}
 	builder, err := build.New(cfg, db, mirror)
@@ -132,11 +133,17 @@ func run() error {
 	}
 	roomManager.Assets = assetManager
 	archiver.Assets = assetManager
-	if err = roomManager.SyncBranches(ctx); err != nil {
+	initialRefs, err := mirror.Branches(ctx)
+	if err != nil {
 		return err
 	}
+	if len(initialRefs) > 0 {
+		if err = roomManager.SyncBranches(ctx); err != nil {
+			return err
+		}
+	}
 	server := api.New(cfg, db, mirror, builder, roomManager, authenticator, bus)
-	errorsChannel := make(chan error, len(cfg.Server.Listen)+4)
+	errorsChannel := make(chan error, len(cfg.Server.Listen))
 	servers := []*http.Server{}
 	listeners := []net.Listener{}
 	for _, address := range cfg.Server.Listen {
@@ -158,10 +165,27 @@ func run() error {
 		}()
 		slog.Info("chorusd listening", "address", address)
 	}
-	go func() { errorsChannel <- builder.Run(ctx) }()
-	go func() { errorsChannel <- roomManager.Run(ctx) }()
-	go func() { errorsChannel <- archiver.Run(ctx) }()
-	go func() { errorsChannel <- bus.Run(ctx) }()
+	go supervisor.Run(ctx, "builder", builder.Run)
+	go supervisor.Run(ctx, "rooms", roomManager.Run)
+	go supervisor.Run(ctx, "archive", archiver.Run)
+	go supervisor.Run(ctx, "events", bus.Run)
+	go supervisor.Run(ctx, "git", func(ctx context.Context) error {
+		for {
+			refreshCtx, done := context.WithTimeout(ctx, 30*time.Second)
+			err := roomManager.Refresh(refreshCtx)
+			done()
+			if err != nil {
+				return fmt.Errorf("git refresh unavailable; retaining local mirror: %w", err)
+			}
+			timer := time.NewTimer(config.Duration(cfg.Git.PollInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	})
 	var runErr error
 	select {
 	case <-ctx.Done():

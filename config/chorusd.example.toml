@@ -51,7 +51,7 @@ lock_file = "/srv/chorus-build.lock"
 [rooms]
 namespace = "chorus-rooms"
 kubeconfig = "/var/lib/chorusd/kubeconfig"
-router_address = "100.64.0.43:25565"
+router_address = "10.1.2.137:25565"
 webhook_sources = ["10.42.0.0/16"]
 heap = "4G"
 memory_limit = "5Gi"

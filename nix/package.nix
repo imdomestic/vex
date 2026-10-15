@@ -9,6 +9,11 @@ buildGoModule {
   nativeCheckInputs = [ git ];
   checkPhase = ''
     runHook preCheck
+    unformatted=$(gofmt -l cmd internal)
+    if [ -n "$unformatted" ]; then
+      printf '%s\n' "$unformatted" >&2
+      exit 1
+    fi
     go test -p "$NIX_BUILD_CORES" ./...
     runHook postCheck
   '';

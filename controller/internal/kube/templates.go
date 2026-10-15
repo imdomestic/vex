@@ -107,7 +107,7 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 			"mc-router.itzg.me/externalServerName": spec.Room.ID + "." + c.cfg.Minecraft.Zone,
 			"mc-router.itzg.me/autoScaleUp":        "false", "mc-router.itzg.me/autoScaleDown": "false",
 		}},
-		Spec: corev1.ServiceSpec{Selector: selector, Ports: []corev1.ServicePort{{Name: "minecraft", Port: 25565, TargetPort: intstr.FromString("minecraft")}}},
+		Spec: corev1.ServiceSpec{Selector: selector, Ports: []corev1.ServicePort{{Name: "minecraft", Protocol: corev1.ProtocolTCP, Port: 25565, TargetPort: intstr.FromString("minecraft")}}},
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-credentials", Namespace: c.ns, Labels: labels},

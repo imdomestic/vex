@@ -53,3 +53,11 @@ func TestArchivePathBoundaries(t *testing.T) {
 		t.Fatal(host, root, err)
 	}
 }
+
+func TestTransferRetryDelay(t *testing.T) {
+	for attempt, want := range map[int]time.Duration{0: time.Minute, 1: time.Minute, 2: 2 * time.Minute, 6: 32 * time.Minute, 7: time.Hour, 1000: time.Hour} {
+		if got := retryDelay(attempt); got != want {
+			t.Fatalf("attempt=%d got=%s want=%s", attempt, got, want)
+		}
+	}
+}

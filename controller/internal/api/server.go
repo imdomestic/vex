@@ -145,7 +145,7 @@ func (s *Server) Handler() http.Handler {
 			Event     string          `json:"event"`
 			Timestamp string          `json:"timestamp"`
 			Status    string          `json:"status"`
-			Server    json.RawMessage `json:"server"`
+			Server    string          `json:"server"`
 			Player    json.RawMessage `json:"player"`
 			Backend   json.RawMessage `json:"backend"`
 			Client    json.RawMessage `json:"client"`
@@ -154,13 +154,7 @@ func (s *Server) Handler() http.Handler {
 		if err := decode(r, &event, false); err != nil {
 			return err
 		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			if err := s.Rooms.Reconcile(ctx); err != nil {
-				slog.Error("webhook probe failed", "error", err)
-			}
-		}()
+		s.Rooms.RequestReconcile(event.Server)
 		w.WriteHeader(204)
 		return nil
 	})

@@ -48,7 +48,7 @@ mc-router webhook 是部署内部接口，只接受受信任的 mc-router 调用
 | `build_failed` | 409；请求依赖已失败的构建；异步构建失败也使用该 code |
 | `build_mismatch` | 409；跨 build hop，或资产 Minecraft、loader、命名空间与目标构建不兼容 |
 | `capacity_exhausted` | 排队提示；已受理的 start/hop 返回 202，Room 保持 queued |
-| `start_timeout` | 异步启动超过 300 秒，Room 进入 failed |
+| `start_timeout` | Pod 连续未就绪超过启动期限；保存日志并确认 Pod 退出后 Room 进入 failed |
 | `node_lost` | 409；请求依赖失联节点上的房间；异步失联也写入 Room.lastError |
 | `archive_failed` | 409；需要的已校验归档文件不可用或归档条件未满足；异步归档、恢复失败也使用该 code |
 
@@ -199,6 +199,8 @@ commits 的 before 是上一页最后一个 SHA；下一页从同一分支当前
 
 构建键为 `(完整SHA,loader)`。构建列表包含排队、进行中、失败及仍在缓存中的 ready 构建。相同构建的并发请求合并到同一次尝试，全局同一时刻最多运行一个 Gradle 构建。
 
+failed 构建从 finishedAt 起保留七天，随后删除构建记录和各次尝试日志；单项 GET 返回 404，Branch/Commit 摘要变为 null。再次请求同一构建键会递增永久保留的 attempt 计数。
+
 force 的处理：queued/building 复用当前尝试；failed 创建下一尝试；ready 且没有任何非 closed 房间引用时创建下一尝试；ready 正被引用时返回 `409 conflict`。开始下一尝试时递增 attempt，重置 queuedAt，将 minecraft、loaderVersion、java、builtAt、durationSec、startedAt、finishedAt、lastError 设为 null，files、modIds 设为 `[]`，日志切换到本次尝试。异步结果必须匹配 `(buildId,attempt)`。
 
 普通 POST 和 Room.start 不隐式重试 failed 构建。用户显式 force 后，再启动失败房间。ready 构建按 LRU 保留配置数量，被任何非 closed 房间引用的构建不可淘汰。淘汰后 manifest、文件和日志一起退出查询集合，单项 GET 返回 404，Branch/Commit 摘要变为 null；再次请求该键会重新构建。完整 SHA 不同却形成相同短 Build ID 时返回 `409 conflict`，不能覆盖另一个构建。
@@ -262,7 +264,9 @@ start 的 seed 只允许 commit 在首次启动或 closed 且旧 PVC 已清理�
 
 就绪条件为 Pod Ready，且通过 mc-router、使用该房间主机名的 SLP 返回 MOTD，包含全部匹配的 `room=<id> build=<buildId> generation=<n>`。只有满足条件才写入 ready。MOTD 模板为 `§7chorus §f<id>\n§8room=<id> build=<buildId> generation=<n>`。节点、Pod、路由验证结果更新时必须检查 generation，旧周期不能更新新周期。
 
-构建未完成时进入 building；等待容量时 queued；种子恢复使用 §5 的 queued；创建或扩容后进入 starting。进入 starting 后超过 300 秒未通过验证进入 failed，lastError 使用 start_timeout，日志保留最后 200 行。容量等待自动继续，不返回拒绝已受理请求的容量错误。
+构建未完成时进入 building；等待容量时 queued；种子恢复使用 §5 的 queued；创建或扩容后进入 starting。Pod 连续未就绪超过配置的启动期限（默认 300 秒）时，lastError 使用 start_timeout。控制器先保存最后 200 行诊断日志，再缩容到零，确认 Pod 退出后进入 failed，保留 PVC；清理期间 phase=stopping failed server。failed 不占运行容量，日志接口继续提供该 generation 保存的诊断日志。Pod 已 Ready 而路由 SLP 失败时保持 starting、phase=route unavailable，持续重试，不因路由等待超时停止 Pod。Pod 恢复 Ready 后清除连续未就绪计时。容量等待自动继续，不返回拒绝已受理请求的容量错误。
+
+每个房间独立调和。单个房间操作失败时记录该房间的 lastError，其他房间继续推进；后续调和继续重试。控制器重启后继续尚未完成的失败清理。
 
 Kubernetes 对象、归档 Job 的 `chorus.dev/generation` 标签、房间 token、MOTD 和 Snapshot.roomGeneration 都绑定同一周期。controller 重启从持久化状态接管已有对象，不重复登记周期。
 
@@ -274,7 +278,7 @@ finished branch 先停止并完成归档，再 closed。持久化世界和对象
 
 restart 完成原周期停止和归档后才接受下一周期；停止或归档失败不创建新周期。branch 使用最新远端 head，并保留世界；其他 kind 使用其固定 SHA 和相应新周期种子规则。运行中的 branch head 移动只更新 behindHead，不替换正在使用的构建。
 
-branch 固定调度 encore；commit/asset 优先在线的 seraph，否则 encore。节点 NotReady 持续超过 60 秒，相关房间变为 lost，世界恢复只使用此前完成的快照。失联不会产生成功归档记录；对象清理遵守数据保留权限。
+branch 固定调度 encore；commit/asset 优先在线的 seraph，否则 encore。节点 NotReady 持续超过 60 秒，相关房间变为 lost；节点持续不可用时保持 lost。节点恢复 Ready 后观察原 Pod：Pod 仍存在、Ready 且 generation/build 身份匹配时进入 starting，通过正常路由核验重新 ready；其他情况进入 stopping，执行保存、缩容和归档，branch 保留 PVC。失联前已经请求停止、完成标签或失败清理的房间继续相应清理。失联不会产生成功归档记录；对象清理遵守数据保留权限。
 
 ### 4.4 租约与空闲
 
@@ -420,4 +424,4 @@ tank 同步使用持久化队列，完成远端 SHA-256 校验后才设置 tankV
 
 固定 mc-router 1.47.2 的通知对象为 `{event:string,timestamp:timestamp,status:string,server:string,client?:{host:string,port:integer},player?:{name:string,uuid:string},backend?:string,error?:string}`。本部署启用 event=connect/disconnect；status 为 success、missing-backend 或 failed-backend-connection；server 为握手主机名，backend 为已确定的后端地址。client、player、backend、error 按上游实际可得信息省略。
 
-接收端不依赖通知中一定存在玩家资料。transfer 连接的玩家数量仍由 SLP 核验。房间未匹配的通知不创建房间或改写玩家数。drain 中归档失败保留房间和世界，客户端通过 Room 状态观察原因。
+接收端不依赖通知中一定存在玩家资料。通知通过容量为 1 的待办信号合并，由同一个后台循环执行调和；通知对应房间跳过本轮 15 秒 SLP 探测间隔。transfer 连接的玩家数量仍由 SLP 核验。房间未匹配的通知不创建房间或改写玩家数。drain 中归档失败保留房间和世界，客户端通过 Room 状态观察原因。

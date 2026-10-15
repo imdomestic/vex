@@ -13,6 +13,7 @@ import (
 	"github.com/imdomestic/chorus-testbed/controller/internal/config"
 	"github.com/imdomestic/chorus-testbed/controller/internal/model"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -45,14 +46,17 @@ type RoomSpec struct {
 }
 
 type RoomStatus struct {
-	Exists     bool
-	PodExists  bool
-	Ready      bool
-	Node       string
-	BuildID    string
-	Generation int64
-	Phase      string
-	Message    string
+	Exists          bool
+	PodExists       bool
+	Ready           bool
+	PodReady        bool
+	IdentityMatches bool
+	Terminating     bool
+	Node            string
+	BuildID         string
+	Generation      int64
+	Phase           string
+	Message         string
 }
 
 func New(cfg config.Config) (*Client, error) {
@@ -125,8 +129,19 @@ func (c *Client) EnsureRoom(ctx context.Context, spec RoomSpec) error {
 		if !managed(current.Labels, spec.Room.ID) {
 			return fmt.Errorf("credential Secret is not owned by this room")
 		}
-		secret.ResourceVersion = current.ResourceVersion
-		_, e = c.api.CoreV1().Secrets(c.ns).Update(ctx, secret, metav1.UpdateOptions{})
+		updated := current.DeepCopy()
+		updated.Labels = mergeManagedLabels(updated.Labels, secret.Labels)
+		if updated.Data == nil {
+			updated.Data = map[string][]byte{}
+		}
+		for key, value := range secret.Data {
+			updated.Data[key] = value
+		}
+		updated.Type = secret.Type
+		if equality.Semantic.DeepEqual(current, updated) {
+			return nil
+		}
+		_, e = c.api.CoreV1().Secrets(c.ns).Update(ctx, updated, metav1.UpdateOptions{})
 		return e
 	}); err != nil {
 		return err
@@ -143,14 +158,26 @@ func (c *Client) EnsureRoom(ctx context.Context, spec RoomSpec) error {
 		if !managed(current.Labels, spec.Room.ID) {
 			return fmt.Errorf("Service is not owned by this room")
 		}
-		current.Labels = service.Labels
+		before := current.DeepCopy()
+		current.Labels = mergeManagedLabels(current.Labels, service.Labels)
 		if current.Annotations == nil {
 			current.Annotations = map[string]string{}
 		}
 		for key, value := range service.Annotations {
 			current.Annotations[key] = value
 		}
-		current.Spec.Ports, current.Spec.Selector = service.Spec.Ports, service.Spec.Selector
+		ports := append([]corev1.ServicePort(nil), service.Spec.Ports...)
+		for i := range ports {
+			for _, existing := range current.Spec.Ports {
+				if existing.Name == ports[i].Name && existing.Protocol == ports[i].Protocol {
+					ports[i].NodePort = existing.NodePort
+				}
+			}
+		}
+		current.Spec.Ports, current.Spec.Selector = ports, service.Spec.Selector
+		if equality.Semantic.DeepEqual(before, current) {
+			return nil
+		}
 		_, e = c.api.CoreV1().Services(c.ns).Update(ctx, current, metav1.UpdateOptions{})
 		return e
 	}); err != nil {
@@ -168,6 +195,7 @@ func (c *Client) EnsureRoom(ctx context.Context, spec RoomSpec) error {
 		if !managed(current.Labels, spec.Room.ID) {
 			return fmt.Errorf("StatefulSet is not owned by this room")
 		}
+		before := current.DeepCopy()
 		generation, e := strconv.ParseInt(current.Labels["chorus.dev/generation"], 10, 64)
 		if e != nil {
 			return e
@@ -188,11 +216,24 @@ func (c *Client) EnsureRoom(ctx context.Context, spec RoomSpec) error {
 		if generation == spec.Room.Generation && current.Labels["chorus.dev/build"] != spec.Room.BuildID {
 			return fmt.Errorf("room build cannot change within a generation")
 		}
-		current.Labels = workload.Labels
+		current.Labels = mergeManagedLabels(current.Labels, workload.Labels)
 		current.Spec.Replicas = workload.Spec.Replicas
+		if equality.Semantic.DeepEqual(before, current) {
+			return nil
+		}
 		_, e = c.api.AppsV1().StatefulSets(c.ns).Update(ctx, current, metav1.UpdateOptions{})
 		return e
 	})
+}
+
+func mergeManagedLabels(current, desired map[string]string) map[string]string {
+	if current == nil {
+		current = map[string]string{}
+	}
+	for key, value := range desired {
+		current[key] = value
+	}
+	return current
 }
 
 func (c *Client) SyncHost(ctx context.Context, id, host string) error {
@@ -258,10 +299,12 @@ func (c *Client) ObserveRoom(ctx context.Context, id string) (RoomStatus, error)
 	}
 	status.PodExists, status.Node = true, pod.Spec.NodeName
 	status.Phase, status.Message = string(pod.Status.Phase), pod.Status.Message
-	identity := pod.Labels["chorus.dev/generation"] == strconv.FormatInt(status.Generation, 10) && pod.Labels["chorus.dev/build"] == status.BuildID
+	status.IdentityMatches = pod.Labels["chorus.dev/generation"] == strconv.FormatInt(status.Generation, 10) && pod.Labels["chorus.dev/build"] == status.BuildID
+	status.Terminating = pod.DeletionTimestamp != nil
 	for _, condition := range pod.Status.Conditions {
 		if condition.Type == corev1.PodReady {
-			status.Ready = identity && pod.DeletionTimestamp == nil && condition.Status == corev1.ConditionTrue
+			status.PodReady = condition.Status == corev1.ConditionTrue
+			status.Ready = status.IdentityMatches && !status.Terminating && status.PodReady
 			if condition.Status != corev1.ConditionTrue {
 				status.Message = condition.Message
 			}
@@ -298,6 +341,9 @@ func (c *Client) ScaleRoom(ctx context.Context, id string, replicas int32) error
 		}
 		if !managed(sts.Labels, id) {
 			return fmt.Errorf("StatefulSet is not owned by this room")
+		}
+		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == replicas {
+			return nil
 		}
 		sts.Spec.Replicas = &replicas
 		_, e = c.api.AppsV1().StatefulSets(c.ns).Update(ctx, sts, metav1.UpdateOptions{})

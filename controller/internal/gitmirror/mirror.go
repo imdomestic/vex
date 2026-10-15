@@ -24,9 +24,10 @@ type Ref struct {
 }
 
 type Mirror struct {
-	remote string
-	dir    string
-	mu     sync.Mutex
+	remote    string
+	dir       string
+	mu        sync.Mutex
+	refreshMu sync.Mutex
 }
 
 func New(remote, mirrorDir string) (*Mirror, error) {
@@ -36,9 +37,59 @@ func New(remote, mirrorDir string) (*Mirror, error) {
 	return &Mirror{remote: remote, dir: filepath.Clean(mirrorDir)}, nil
 }
 
-func (m *Mirror) Refresh(ctx context.Context) error {
+func (m *Mirror) Initialize(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, err := os.Stat(m.dir); err == nil {
+		return m.validate(ctx)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(m.dir), 0750); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(filepath.Dir(m.dir), ".mirror-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	if _, err = command(ctx, "", "init", "--bare", "--", stage); err != nil {
+		return err
+	}
+	if _, err = command(ctx, "", "--git-dir="+stage, "remote", "add", "--mirror=fetch", "origin", m.remote); err != nil {
+		return err
+	}
+	return os.Rename(stage, m.dir)
+}
+
+func (m *Mirror) validate(ctx context.Context) error {
+	bare, err := m.git(ctx, "rev-parse", "--is-bare-repository")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(bare) != "true" {
+		return fmt.Errorf("git mirror directory is not a bare repository")
+	}
+	remote, err := m.git(ctx, "remote", "get-url", "origin")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(remote) != m.remote {
+		return fmt.Errorf("git mirror origin differs from configured remote")
+	}
+	return nil
+}
+
+func (m *Mirror) Refresh(ctx context.Context) error {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	m.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			m.mu.Unlock()
+		}
+	}()
 	_, err := os.Stat(m.dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err = os.MkdirAll(filepath.Dir(m.dir), 0750); err != nil {
@@ -57,20 +108,11 @@ func (m *Mirror) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	bare, err := m.git(ctx, "rev-parse", "--is-bare-repository")
-	if err != nil {
+	if err = m.validate(ctx); err != nil {
 		return err
 	}
-	if strings.TrimSpace(bare) != "true" {
-		return fmt.Errorf("git mirror directory is not a bare repository")
-	}
-	remote, err := m.git(ctx, "remote", "get-url", "origin")
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(remote) != m.remote {
-		return fmt.Errorf("git mirror origin differs from configured remote")
-	}
+	m.mu.Unlock()
+	locked = false
 	_, err = m.git(ctx, "fetch", "--prune", "--force", "origin")
 	return err
 }
@@ -120,7 +162,7 @@ func (m *Mirror) verifyCommit(ctx context.Context, sha string) error {
 		if !errors.As(err, &failure) {
 			return err
 		}
-		return model.Failure("not_found", "commit is absent from the fetched repository")
+		return model.Failure("not_found", "commit is absent from the local git mirror; a successful remote refresh is required before building it")
 	}
 	if strings.TrimSpace(kind) != "commit" {
 		return model.Failure("not_found", "object is not a commit")
