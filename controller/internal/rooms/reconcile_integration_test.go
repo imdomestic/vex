@@ -401,6 +401,46 @@ func TestRealRoomFailureIsolationRouteRecoveryAndCapacity(t *testing.T) {
 		t.Fatal("real authenticated HTTP log did not retain the crash diagnostic", err)
 	}
 	t.Log("real JVM rejected its invalid option; failed followed Pod exit, replicas=0, retained PVC UID, and stored diagnostic through the actual HTTP handler")
+	service, err := cluster.CoreV1().Services(namespace).Get(ctx, "room-"+room.ID, metav1.GetOptions{})
+	if err != nil || service.Annotations["mc-router.itzg.me/externalServerName"] != room.Host {
+		t.Fatal("failed room did not retain its original Service route", err)
+	}
+	previousServiceUID, previousServiceVersion := service.UID, service.ResourceVersion
+	failedGeneration, failedBuild := room.Generation, room.BuildID
+	manager.Cfg.Minecraft.Zone = namespace + ".changed.example"
+	client, err = kube.New(manager.Cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Kube = client
+	room = check()
+	expectedHost := room.ID + "." + manager.Cfg.Minecraft.Zone
+	if room.State != "failed" || room.Host != expectedHost || room.Generation != failedGeneration || room.BuildID != failedBuild || room.LastError == nil || room.LastError.Code != "start_timeout" {
+		t.Fatal("zone synchronization changed failed room identity or failure state")
+	}
+	service, err = cluster.CoreV1().Services(namespace).Get(ctx, "room-"+room.ID, metav1.GetOptions{})
+	if err != nil || service.UID != previousServiceUID || service.ResourceVersion == previousServiceVersion || service.Annotations["mc-router.itzg.me/externalServerName"] != expectedHost {
+		t.Fatal("zone synchronization did not update the existing failed room Service", err)
+	}
+	synchronizedVersion := service.ResourceVersion
+	room = check()
+	service, err = cluster.CoreV1().Services(namespace).Get(ctx, "room-"+room.ID, metav1.GetOptions{})
+	if err != nil || service.ResourceVersion != synchronizedVersion {
+		t.Fatal("repeated failed room reconciliation rewrote the unchanged Service", err)
+	}
+	status, err = client.ObserveRoom(ctx, room.ID)
+	if err != nil || status.PodExists {
+		t.Fatal("zone synchronization recreated a failed room Pod", err)
+	}
+	workload, err = cluster.AppsV1().StatefulSets(namespace).Get(ctx, "room-"+room.ID, metav1.GetOptions{})
+	if err != nil || workload.Spec.Replicas == nil || *workload.Spec.Replicas != 0 {
+		t.Fatal("zone synchronization changed failed room replicas", err)
+	}
+	retained, err = cluster.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, claimName, metav1.GetOptions{})
+	if err != nil || retained.UID != claim.UID {
+		t.Fatal("zone synchronization changed the retained world PVC", err)
+	}
+	t.Log("failed room synchronized its new zone into the existing Service; repeat kept resourceVersion stable, replicas zero, no Pod, and original PVC UID")
 	metadataBytes, err := os.ReadFile(assetMetadata)
 	if err != nil {
 		t.Fatal(err)

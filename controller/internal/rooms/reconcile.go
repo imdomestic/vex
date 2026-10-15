@@ -100,6 +100,12 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			return err
 		}
 	}
+	if room.Host != room.ID+"."+m.Cfg.Minecraft.Zone {
+		room.Host = room.ID + "." + m.Cfg.Minecraft.Zone
+		if err = m.save(ctx, room, rt); err != nil {
+			return err
+		}
+	}
 	if room.State == "failed" {
 		if rt.Failure == nil {
 			rt.Failure = room.LastError
@@ -107,13 +113,10 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 				rt.Failure = model.Failure("start_timeout", "服务器启动失败")
 			}
 		}
-		return m.reconcileFailure(ctx, room, rt)
-	}
-	if room.Host != room.ID+"."+m.Cfg.Minecraft.Zone {
-		room.Host = room.ID + "." + m.Cfg.Minecraft.Zone
-		if err = m.save(ctx, room, rt); err != nil {
+		if err = m.reconcileFailure(ctx, room, rt); err != nil {
 			return err
 		}
+		return m.Kube.SyncHost(ctx, room.ID, room.Host)
 	}
 	if err = m.Kube.SyncHost(ctx, room.ID, room.Host); err != nil {
 		return err
