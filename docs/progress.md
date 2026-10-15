@@ -6,7 +6,9 @@
 
 ## 当前阶段
 
-第三轮 A、B 通过；C、D 正在部署验收。真实房间记录清理后重新启动生成独立 g2 快照，资产全部任务校验及时间回填通过。详情见 `reports/2026-10-15-round3.md`。
+第三轮 A–D 通过：来源迁移、GitHub 仓库、Git 新鲜度、客户端清理、房间记录保留、归档时间和磁盘清理均完成。详情见 `reports/2026-10-15-round3.md`。
+
+04:14 JST：真实 GitHub 手动刷新 1.246 秒、自动刷新 25.812 秒；Ruri 实际重新进入 cb7f59da 的 generation 3，正常退出后隐藏服务器条目为 0，全部原有历史保持。日志 `/Users/linwhite/ruri-chorus/.work/round3-game-exit.json`。
 
 04:02 JST：服务端更新及 plaza 1–3 归档时间补录通过；真实 SSE 重启正常结束。普通 Nix GC 后根分区可用 30.349 GiB，旧 Minecraft roots 和用户系统 generation 全部保持。证据 `.work/round3/application-fields.json`、`gc-after.json`。
 
@@ -105,11 +107,11 @@
 
 - 待用户：独立 Ruri Chorus 在服务器页进入 main-fabric，并从 Git 页进入 cb7f59da，核对实际目的地。
 - seraph 下次真实关机时观察世界保存；自动化已验证 kubelet 宽限配置和两条恢复流程。
-- chorus 来源迁移与 chorus-testbed 的 GitHub 远端等待 HCHogan 完成迁移；hank 事项按第二轮指令暂不处理。
+- 本轮来源迁移及私有 GitHub 远端已完成；hank 事项按第二轮指令暂不处理。
 
 ## 用户已确定的配置
 
-2026-10-14：当前使用 `HCHogan/chorus` 的 `main` 分支作为占位来源；目标仓库为 `imdomestic/chorus`，迁移完成后需要更换。项目根目录的 `REPOSITORY-MIGRATION.md` 记录此要求。
+2026-10-16：当前使用 `imdomestic/chorus` 的 `main` 分支，匿名 HTTPS 只读访问。项目根目录的 `REPOSITORY-MIGRATION.md` 记录完整迁移核对。
 
 2026-10-14：用户要求在 encore 搭建 k3s；六个现有 Minecraft 服务归档校验通过后停用，保留原始文件。encore k3s 已运行；归档于 18:24:39 JST 完成 tank 校验，随后应用持久停用配置。归档路径为 `tank:/srv/archive/chorus/legacy/20261014T084821Z`。
 
