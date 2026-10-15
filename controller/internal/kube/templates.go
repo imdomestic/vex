@@ -35,48 +35,84 @@ func validDownload(raw string) bool {
 
 func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv1.StatefulSet, error) {
 	name, err := objectName(spec.Room.ID)
-	if err != nil { return nil, nil, nil, err }
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if spec.Room.Generation < 1 || spec.Room.Loader != "fabric" || spec.Room.BuildID != spec.Build.ID || spec.Build.Status != "ready" || spec.Build.Minecraft == nil || spec.Build.LoaderVersion == nil {
 		return nil, nil, nil, fmt.Errorf("room requires a ready Fabric build and a positive generation")
 	}
-	if spec.Room.Kind != "branch" && spec.Room.Kind != "commit" && spec.Room.Kind != "asset" { return nil, nil, nil, fmt.Errorf("invalid room kind") }
-	if spec.Node == "" || (spec.Room.Kind == "branch" && spec.Node != "encore") { return nil, nil, nil, fmt.Errorf("room node is required; branch rooms require encore") }
-	if spec.RCONPassword == "" || spec.RoomToken == "" { return nil, nil, nil, fmt.Errorf("room credentials are required") }
-	if spec.SeedURL != "" && (!validDownload(spec.SeedURL) || !sha256Pattern.MatchString(spec.SeedSHA256)) { return nil, nil, nil, fmt.Errorf("seed requires a valid download URL and SHA-256") }
-	for _, mod := range spec.Mods { if !validDownload(mod) { return nil, nil, nil, fmt.Errorf("invalid mod download URL") } }
+	if spec.Room.Kind != "branch" && spec.Room.Kind != "commit" && spec.Room.Kind != "asset" {
+		return nil, nil, nil, fmt.Errorf("invalid room kind")
+	}
+	if spec.Node == "" || (spec.Room.Kind == "branch" && spec.Node != "encore") {
+		return nil, nil, nil, fmt.Errorf("room node is required; branch rooms require encore")
+	}
+	if spec.RCONPassword == "" || spec.RoomToken == "" {
+		return nil, nil, nil, fmt.Errorf("room credentials are required")
+	}
+	if spec.SeedURL != "" && (!validDownload(spec.SeedURL) || !sha256Pattern.MatchString(spec.SeedSHA256)) {
+		return nil, nil, nil, fmt.Errorf("seed requires a valid download URL and SHA-256")
+	}
+	for _, mod := range spec.Mods {
+		if !validDownload(mod) {
+			return nil, nil, nil, fmt.Errorf("invalid mod download URL")
+		}
+	}
 	downloads := []model.BuildFile{}
 	modNames := map[string]bool{}
 	for _, file := range spec.Build.Files {
-		if file.Side != "both" && file.Side != "server" { continue }
-		if len(downloads) >= len(spec.Mods) || !jarNamePattern.MatchString(file.Name) || modNames[file.Name] || !sha256Pattern.MatchString(file.SHA256) || file.Size <= 0 { return nil, nil, nil, fmt.Errorf("invalid server mod manifest") }
+		if file.Side != "both" && file.Side != "server" {
+			continue
+		}
+		if len(downloads) >= len(spec.Mods) || !jarNamePattern.MatchString(file.Name) || modNames[file.Name] || !sha256Pattern.MatchString(file.SHA256) || file.Size <= 0 {
+			return nil, nil, nil, fmt.Errorf("invalid server mod manifest")
+		}
 		file.URL = spec.Mods[len(downloads)]
 		modNames[file.Name] = true
 		downloads = append(downloads, file)
 	}
-	if len(downloads) != len(spec.Mods) { return nil, nil, nil, fmt.Errorf("server mod manifest and downloads differ") }
+	if len(downloads) != len(spec.Mods) {
+		return nil, nil, nil, fmt.Errorf("server mod manifest and downloads differ")
+	}
 	modJSON, err := json.Marshal(downloads)
-	if err != nil { return nil, nil, nil, err }
-	if spec.ResourcePackURL != "" && (!validDownload(spec.ResourcePackURL) || len(spec.ResourcePackSHA1) != 40) { return nil, nil, nil, fmt.Errorf("resource pack requires URL and SHA-1") }
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if spec.ResourcePackURL != "" && (!validDownload(spec.ResourcePackURL) || len(spec.ResourcePackSHA1) != 40) {
+		return nil, nil, nil, fmt.Errorf("resource pack requires URL and SHA-1")
+	}
 	heap := strings.TrimSuffix(strings.TrimSuffix(c.cfg.Rooms.Heap, "G"), "M")
-	if strings.HasSuffix(c.cfg.Rooms.Heap, "G") { heap += "Gi" } else if strings.HasSuffix(c.cfg.Rooms.Heap, "M") { heap += "Mi" } else { heap = c.cfg.Rooms.Heap }
+	if strings.HasSuffix(c.cfg.Rooms.Heap, "G") {
+		heap += "Gi"
+	} else if strings.HasSuffix(c.cfg.Rooms.Heap, "M") {
+		heap += "Mi"
+	} else {
+		heap = c.cfg.Rooms.Heap
+	}
 	request, err := resource.ParseQuantity(heap)
-	if err != nil { return nil, nil, nil, err }
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	limit, err := resource.ParseQuantity(c.cfg.Rooms.MemoryLimit)
-	if err != nil { return nil, nil, nil, err }
-	if request.Sign() <= 0 || limit.Cmp(request) < 0 { return nil, nil, nil, fmt.Errorf("room memory limit must cover its heap") }
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if request.Sign() <= 0 || limit.Cmp(request) < 0 {
+		return nil, nil, nil, fmt.Errorf("room memory limit must cover its heap")
+	}
 	labels := roomLabels(spec)
 	selector := map[string]string{"chorus.dev/managed": "true", "chorus.dev/room": spec.Room.ID, "app.kubernetes.io/component": "minecraft"}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.ns, Labels: labels, Annotations: map[string]string{
-			"mc-router.itzg.me/externalServerName": spec.Room.ID+"."+c.cfg.Minecraft.Zone,
-			"mc-router.itzg.me/autoScaleUp": "false", "mc-router.itzg.me/autoScaleDown": "false",
+			"mc-router.itzg.me/externalServerName": spec.Room.ID + "." + c.cfg.Minecraft.Zone,
+			"mc-router.itzg.me/autoScaleUp":        "false", "mc-router.itzg.me/autoScaleDown": "false",
 		}},
 		Spec: corev1.ServiceSpec{Selector: selector, Ports: []corev1.ServicePort{{Name: "minecraft", Port: 25565, TargetPort: intstr.FromString("minecraft")}}},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name+"-credentials", Namespace: c.ns, Labels: labels},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{"rcon-password": []byte(spec.RCONPassword), "room-token": []byte(spec.RoomToken)},
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-credentials", Namespace: c.ns, Labels: labels},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{"rcon-password": []byte(spec.RCONPassword), "room-token": []byte(spec.RoomToken)},
 	}
 	env := []corev1.EnvVar{
 		{Name: "EULA", Value: "TRUE"}, {Name: "TYPE", Value: "FABRIC"},
@@ -95,7 +131,9 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 		{Name: "CHORUS_GENERATION", Value: strconv.FormatInt(spec.Room.Generation, 10)},
 		{Name: "CHORUS_CONTROLLER_URL", Value: c.cfg.Server.InternalBaseURL}, secretEnv("CHORUS_ROOM_TOKEN", secret.Name, "room-token"),
 	}
-	if spec.ResourcePackURL != "" { env = append(env, corev1.EnvVar{Name: "RESOURCE_PACK", Value: spec.ResourcePackURL}, corev1.EnvVar{Name: "RESOURCE_PACK_SHA1", Value: spec.ResourcePackSHA1}) }
+	if spec.ResourcePackURL != "" {
+		env = append(env, corev1.EnvVar{Name: "RESOURCE_PACK", Value: spec.ResourcePackURL}, corev1.EnvVar{Name: "RESOURCE_PACK_SHA1", Value: spec.ResourcePackSHA1})
+	}
 	podLabels := roomLabels(spec)
 	podLabels["app.kubernetes.io/component"] = "minecraft"
 	replicas, grace, automount := int32(1), int64(120), false
@@ -108,19 +146,19 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: podLabels}, Spec: corev1.PodSpec{
 				AutomountServiceAccountToken: &automount, TerminationGracePeriodSeconds: &grace,
 				NodeSelector: map[string]string{"kubernetes.io/hostname": spec.Node},
-				Volumes: []corev1.Volume{{Name: "server-mods", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("1Gi")}}}},
+				Volumes:      []corev1.Volume{{Name: "server-mods", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("1Gi")}}}},
 				InitContainers: []corev1.Container{{Name: "seed-world", Image: c.cfg.Minecraft.Image,
-					Command: []string{"/bin/bash", "-euo", "pipefail", "-c", seedScript},
-					Env: []corev1.EnvVar{{Name: "SEED_URL", Value: spec.SeedURL}, {Name: "SEED_SHA256", Value: spec.SeedSHA256}, {Name: "TMPDIR", Value: "/data/.work"}, {Name: "SERVER_MODS", Value: string(modJSON)}},
+					Command:      []string{"/bin/bash", "-euo", "pipefail", "-c", seedScript},
+					Env:          []corev1.EnvVar{{Name: "SEED_URL", Value: spec.SeedURL}, {Name: "SEED_SHA256", Value: spec.SeedSHA256}, {Name: "TMPDIR", Value: "/data/.work"}, {Name: "SERVER_MODS", Value: string(modJSON)}},
 					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}, {Name: "server-mods", MountPath: "/chorus-mods"}},
-					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}, Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}},
+					Resources:    corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}, Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}},
 				}},
 				Containers: []corev1.Container{{Name: "mc", Image: c.cfg.Minecraft.Image, Env: env,
-					Ports: []corev1.ContainerPort{{Name: "minecraft", ContainerPort: 25565}},
-					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: request}, Limits: corev1.ResourceList{corev1.ResourceMemory: limit}},
-					StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"mc-health"}}}, PeriodSeconds: 5, FailureThreshold: 60},
+					Ports:          []corev1.ContainerPort{{Name: "minecraft", ContainerPort: 25565}},
+					Resources:      corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: request}, Limits: corev1.ResourceList{corev1.ResourceMemory: limit}},
+					StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"mc-health"}}}, PeriodSeconds: 5, FailureThreshold: 60},
 					ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"mc-health"}}}, PeriodSeconds: 10},
-					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}, {Name: "server-mods", MountPath: "/chorus-mods", ReadOnly: true}},
+					VolumeMounts:   []corev1.VolumeMount{{Name: "data", MountPath: "/data"}, {Name: "server-mods", MountPath: "/chorus-mods", ReadOnly: true}},
 				}},
 			}},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Name: "data", Labels: map[string]string{"chorus.dev/managed": "true", "chorus.dev/room": spec.Room.ID, "chorus.dev/kind": spec.Room.Kind}}, Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: &storageClass, AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}}}}},
@@ -133,7 +171,10 @@ func secretEnv(name, secret, key string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key}}}
 }
 
-func quantityPointer(value string) *resource.Quantity { result := resource.MustParse(value); return &result }
+func quantityPointer(value string) *resource.Quantity {
+	result := resource.MustParse(value)
+	return &result
+}
 
 const seedScript = `mkdir -p /data/.work
 count=$(jq 'length' <<< "$SERVER_MODS")

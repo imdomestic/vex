@@ -117,10 +117,14 @@ func (m *Mirror) verifyCommit(ctx context.Context, sha string) error {
 			return ctx.Err()
 		}
 		var failure *exec.ExitError
-		if !errors.As(err, &failure) { return err }
+		if !errors.As(err, &failure) {
+			return err
+		}
 		return model.Failure("not_found", "commit is absent from the fetched repository")
 	}
-	if strings.TrimSpace(kind) != "commit" { return model.Failure("not_found", "object is not a commit") }
+	if strings.TrimSpace(kind) != "commit" {
+		return model.Failure("not_found", "object is not a commit")
+	}
 	return nil
 }
 
