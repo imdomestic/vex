@@ -1,10 +1,16 @@
 # 进度
 
+第三轮开始：2026-10-16 03:27 JST。SSH、sudo、k3s 正常；新来源迁移及真实进房通过，完整历史扫描后已推送私有仓库。Ruri 0.10.6 已公开发布。
+
 挂机开始：2026-10-15 02:51 JST。SSH/encore sudo 通过；Mac sudo 需要密码；encore 磁盘可用 40 GiB、MemAvailable 约 18 GiB、k3s Ready；Ruri CLI 0.10.5 可用；临时 zone 解析通过；seraph 可访问但尚未加入集群。
 
 ## 当前阶段
 
-第二轮 B–H 通过：服务端修复、系统迁移、seraph、split DNS、生产归档、d2-map-dev 合并和 Ruri 公开仓库推送均完成。A 指定房间 GUI 验收待用户。详情见 `reports/2026-10-15-round2.md`。
+第三轮 A、B 通过；C、D 正在部署验收。真实房间记录清理后重新启动生成独立 g2 快照，资产全部任务校验及时间回填通过。详情见 `reports/2026-10-15-round3.md`。
+
+03:50 JST：真实 Minecraft、SQLite、tank 的 generation 延续测试通过，namespace 已删除；资产四项传输完整性、已有记录回填及元数据摘要检查通过。日志 `.work/round3/retention-test.log`、`.work/round3/asset-verification.log`。
+
+03:44 JST：新来源与原镜像 336 个提交连续，全部生产引用存在；main generation 9 真实进入、SLP online=1、正常停止归档通过。日志 `.work/round3/migration-finished.json`。
 
 21:21 JST：按用户指令完成 Ruri 首次推送；dev、P3、P4 的 329 个提交和 4,203 个文件对象完整复扫通过，远端三个分支 SHA 与扫描记录一致。证据 `/Users/linwhite/ruri-chorus/.work/round2-h-push.json`。
 
@@ -20,7 +26,7 @@
 
 18:56 JST：main-fabric generation 6 读取到停止前放置的绿宝石方块；自动停止副本数为零，PVC UID 保持一致。证据 `.work/round2-b-idle.log`、`.work/round2-b-persistence.log`。
 
-需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；当前执行以 `directives/2026-10-15-round2.md` 为准。
+需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；当前执行以 `directives/2026-10-15-round3.md` 为准。
 
 ## P0 已核实事实
 

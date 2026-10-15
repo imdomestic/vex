@@ -122,6 +122,9 @@ func run() error {
 	}
 	bus := events.New(db)
 	roomManager := rooms.New(cfg, db, mirror, builder, cluster, authenticator, bus)
+	if err = roomManager.InitializeRecords(ctx); err != nil {
+		return err
+	}
 	archiver, err := archive.New(cfg, db)
 	if err != nil {
 		return err
@@ -155,7 +158,7 @@ func run() error {
 			return err
 		}
 		listeners = append(listeners, listener)
-		httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 * 1024}
+		httpServer := newHTTPServer(ctx, server.Handler())
 		servers = append(servers, httpServer)
 		go func() {
 			err := httpServer.Serve(listener)
@@ -170,21 +173,7 @@ func run() error {
 	go supervisor.Run(ctx, "archive", archiver.Run)
 	go supervisor.Run(ctx, "events", bus.Run)
 	go supervisor.Run(ctx, "git", func(ctx context.Context) error {
-		for {
-			refreshCtx, done := context.WithTimeout(ctx, 30*time.Second)
-			err := roomManager.Refresh(refreshCtx)
-			done()
-			if err != nil {
-				return fmt.Errorf("git refresh unavailable; retaining local mirror: %w", err)
-			}
-			timer := time.NewTimer(config.Duration(cfg.Git.PollInterval))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
-		}
+		return refreshGit(ctx, roomManager, config.Duration(cfg.Git.PollInterval))
 	})
 	var runErr error
 	select {
@@ -200,4 +189,29 @@ func run() error {
 		}
 	}
 	return runErr
+}
+
+func newHTTPServer(ctx context.Context, handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    32 * 1024,
+	}
+}
+
+func refreshGit(ctx context.Context, manager *rooms.Manager, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := manager.Refresh(ctx); err != nil {
+			return fmt.Errorf("git refresh unavailable; retaining local mirror: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

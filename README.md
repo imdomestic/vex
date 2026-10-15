@@ -15,7 +15,7 @@ chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 
 | 本地客户端仓库 | `/Users/linwhite/ruri-chorus` |
 | encore Git remote | `encore:/home/linwhite/git/chorus-testbed.git` |
 
-源码目前读取 HCHogan/chorus 的 main，后续仓库更换要求见 [REPOSITORY-MIGRATION.md](REPOSITORY-MIGRATION.md)。生产归档通过专用账号 `chorus-archive` 同步到 tank，带宽限制为 `5M`；远端摘要与大小验证成功后才允许淘汰热缓存。
+源码通过匿名 HTTPS 读取 `imdomestic/chorus` 的 `main`，迁移核对与真实进房结果见 [REPOSITORY-MIGRATION.md](REPOSITORY-MIGRATION.md)。生产归档通过专用账号 `chorus-archive` 同步到 tank，带宽限制为 `5M`；远端摘要与大小验证成功后才允许淘汰热缓存。
 
 ## 客户端
 

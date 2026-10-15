@@ -86,6 +86,17 @@ func writeMetadata(destination string, value any) (string, int64, error) {
 	return worldarchive.Digest(destination)
 }
 
+func writeRevisionMetadata(destination string, revision model.AssetRevision) (string, int64, error) {
+	value := struct {
+		model.AssetMetadata
+		Rev        string          `json:"rev"`
+		SnapshotID *string         `json:"snapshotId"`
+		World      model.WorldFile `json:"world"`
+		CreatedAt  time.Time       `json:"createdAt"`
+	}{revision.AssetMetadata, revision.Rev, revision.SnapshotID, revision.World, revision.CreatedAt}
+	return writeMetadata(destination, value)
+}
+
 func (m *Manager) queue(ctx context.Context, tx *store.Tx, kind, id, revision, part, relative, digest string, size int64) error {
 	key := model.TransferID(kind, id, revision, part)
 	var task model.Transfer
@@ -200,7 +211,7 @@ func (m *Manager) publish(ctx context.Context, metadata model.AssetMetadata, sou
 					}
 				}
 				if _, err = os.Stat(m.absolute(MetadataPath(result.ID, result.Rev))); errors.Is(err, os.ErrNotExist) {
-					if _, _, err = writeMetadata(m.absolute(MetadataPath(result.ID, result.Rev)), result); err != nil {
+					if _, _, err = writeRevisionMetadata(m.absolute(MetadataPath(result.ID, result.Rev)), result); err != nil {
 						return err
 					}
 				} else if err != nil {
@@ -233,7 +244,7 @@ func (m *Manager) publish(ctx context.Context, metadata model.AssetMetadata, sou
 		if err = copyImmutable(source, m.absolute(WorldPath(metadata.ID, revision)), digest, size); err != nil {
 			return err
 		}
-		if _, _, err = writeMetadata(m.absolute(MetadataPath(metadata.ID, revision)), result); err != nil {
+		if _, _, err = writeRevisionMetadata(m.absolute(MetadataPath(metadata.ID, revision)), result); err != nil {
 			return err
 		}
 		asset.Title, asset.LatestRev, asset.Minecraft, asset.Requires, asset.ResourcePack = metadata.Title, revision, metadata.Minecraft, metadata.Requires, metadata.ResourcePack

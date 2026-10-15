@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"github.com/imdomestic/chorus-testbed/controller/internal/model"
@@ -26,19 +26,21 @@ type Ref struct {
 type Mirror struct {
 	remote    string
 	dir       string
-	mu        sync.Mutex
-	refreshMu sync.Mutex
+	mu        contextMutex
+	refreshMu contextMutex
 }
 
 func New(remote, mirrorDir string) (*Mirror, error) {
 	if remote == "" || !filepath.IsAbs(mirrorDir) {
 		return nil, fmt.Errorf("git remote and absolute mirror directory are required")
 	}
-	return &Mirror{remote: remote, dir: filepath.Clean(mirrorDir)}, nil
+	return &Mirror{remote: remote, dir: filepath.Clean(mirrorDir), mu: newContextMutex(), refreshMu: newContextMutex()}, nil
 }
 
 func (m *Mirror) Initialize(ctx context.Context) error {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return err
+	}
 	defer m.mu.Unlock()
 	if _, err := os.Stat(m.dir); err == nil {
 		return m.validate(ctx)
@@ -81,9 +83,13 @@ func (m *Mirror) validate(ctx context.Context) error {
 }
 
 func (m *Mirror) Refresh(ctx context.Context) error {
-	m.refreshMu.Lock()
+	if err := m.refreshMu.Lock(ctx); err != nil {
+		return err
+	}
 	defer m.refreshMu.Unlock()
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return err
+	}
 	locked := true
 	defer func() {
 		if locked {
@@ -118,7 +124,9 @@ func (m *Mirror) Refresh(ctx context.Context) error {
 }
 
 func (m *Mirror) Branches(ctx context.Context) ([]Ref, error) {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return nil, err
+	}
 	defer m.mu.Unlock()
 	return m.branches(ctx)
 }
@@ -144,7 +152,9 @@ func (m *Mirror) branches(ctx context.Context) ([]Ref, error) {
 }
 
 func (m *Mirror) VerifyCommit(ctx context.Context, sha string) error {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return err
+	}
 	defer m.mu.Unlock()
 	return m.verifyCommit(ctx, sha)
 }
@@ -171,7 +181,9 @@ func (m *Mirror) verifyCommit(ctx context.Context, sha string) error {
 }
 
 func (m *Mirror) Commits(ctx context.Context, branch, before string, limit int) ([]model.Commit, error) {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return nil, err
+	}
 	defer m.mu.Unlock()
 	if limit < 1 {
 		return nil, model.Failure("invalid_request", "commit limit must be positive")
@@ -273,7 +285,9 @@ func (m *Mirror) refNames(ctx context.Context) (map[string][]string, error) {
 }
 
 func (m *Mirror) Checkout(ctx context.Context, sha, destination string) error {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return err
+	}
 	defer m.mu.Unlock()
 	if !filepath.IsAbs(destination) {
 		return fmt.Errorf("worktree destination must be absolute")
@@ -294,7 +308,9 @@ func (m *Mirror) Checkout(ctx context.Context, sha, destination string) error {
 }
 
 func (m *Mirror) RemoveCheckout(ctx context.Context, destination string) error {
-	m.mu.Lock()
+	if err := m.mu.Lock(ctx); err != nil {
+		return err
+	}
 	defer m.mu.Unlock()
 	if !filepath.IsAbs(destination) {
 		return fmt.Errorf("worktree destination must be absolute")
@@ -326,8 +342,20 @@ func command(ctx context.Context, directory string, args ...string) (string, err
 	command := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = 250 * time.Millisecond
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", fmt.Errorf("git operation failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil

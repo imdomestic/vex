@@ -101,6 +101,7 @@ type Room struct {
 	LastError    *Error        `json:"lastError"`
 	CreatedAt    time.Time     `json:"createdAt"`
 	UpdatedAt    time.Time     `json:"updatedAt"`
+	ClosedAt     *time.Time    `json:"closedAt"`
 }
 
 type Lease struct {
@@ -139,11 +140,12 @@ type Meta struct {
 }
 
 type Node struct {
-	Name        string   `json:"name"`
-	Ready       bool     `json:"ready"`
-	Schedulable bool     `json:"schedulable"`
-	MaxRunning  int      `json:"maxRunning"`
-	Rooms       []string `json:"rooms"`
+	Name          string   `json:"name"`
+	Ready         bool     `json:"ready"`
+	Schedulable   bool     `json:"schedulable"`
+	MaxRunning    int      `json:"maxRunning"`
+	Rooms         []string `json:"rooms"`
+	RootFreeBytes *int64   `json:"rootFreeBytes"`
 }
 
 type Requirements struct {
@@ -181,10 +183,11 @@ type WorldFile struct {
 
 type AssetRevision struct {
 	AssetMetadata
-	Rev        string    `json:"rev"`
-	SnapshotID *string   `json:"snapshotId"`
-	World      WorldFile `json:"world"`
-	CreatedAt  time.Time `json:"createdAt"`
+	Rev            string     `json:"rev"`
+	SnapshotID     *string    `json:"snapshotId"`
+	World          WorldFile  `json:"world"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	TankVerifiedAt *time.Time `json:"tankVerifiedAt"`
 }
 
 type Asset struct {

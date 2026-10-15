@@ -218,6 +218,9 @@ func (m *Manager) Step(ctx context.Context) error {
 		return err
 	}
 	if m.Assets != nil {
+		if err = m.Assets.MarkVerified(ctx); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		if err = m.Assets.EvictArchived(ctx); err != nil {
 			return errors.Join(append(failures, err)...)
 		}

@@ -46,17 +46,18 @@ type Runtime struct {
 }
 
 type Manager struct {
-	mu      sync.Mutex
-	wake    reconcileSignals
-	Cfg     config.Config
-	DB      *store.Store
-	Git     *gitmirror.Mirror
-	Builds  *build.Manager
-	Kube    *kube.Client
-	Auth    *auth.Auth
-	Events  *events.Bus
-	Archive *archive.Manager
-	Assets  *assets.Manager
+	mu        sync.Mutex
+	lastPrune time.Time
+	wake      reconcileSignals
+	Cfg       config.Config
+	DB        *store.Store
+	Git       *gitmirror.Mirror
+	Builds    *build.Manager
+	Kube      *kube.Client
+	Auth      *auth.Auth
+	Events    *events.Bus
+	Archive   *archive.Manager
+	Assets    *assets.Manager
 }
 
 func New(c config.Config, db *store.Store, g *gitmirror.Mirror, b *build.Manager, k *kube.Client, a *auth.Auth, e *events.Bus) *Manager {
@@ -84,6 +85,7 @@ func (m *Manager) runtime(ctx context.Context, id string) (Runtime, error) {
 
 func (m *Manager) save(ctx context.Context, room model.Room, rt Runtime) error {
 	room.UpdatedAt = time.Now().UTC()
+	setClosedAt(&room, room.UpdatedAt)
 	return m.DB.Update(ctx, func(tx *store.Tx) error {
 		if err := tx.Put(ctx, "room", room.ID, room); err != nil {
 			return err
@@ -135,6 +137,9 @@ func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, asset str
 			return room, false, err
 		}
 	}
+	if err = m.restoreGeneration(ctx, &room); err != nil {
+		return room, false, err
+	}
 	if err = m.DB.Put(ctx, "room", id, room); err != nil {
 		return room, false, err
 	}
@@ -144,6 +149,10 @@ func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, asset str
 func (m *Manager) SyncBranches(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.syncBranches(ctx)
+}
+
+func (m *Manager) syncBranches(ctx context.Context) error {
 	refs, err := m.Git.Branches(ctx)
 	if err != nil {
 		return err
@@ -246,19 +255,37 @@ func (m *Manager) Branches(ctx context.Context) ([]model.Branch, error) {
 }
 
 func (m *Manager) Refresh(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !m.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	defer m.mu.Unlock()
+	_, err := m.refresh(ctx)
+	return err
+}
+
+// refresh 在持有房间锁时同步分支和事件；返回值标识远端 fetch 失败。
+func (m *Manager) refresh(ctx context.Context) (bool, error) {
 	before, err := m.Branches(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = m.Git.Refresh(ctx); err != nil {
-		return err
+		return true, err
 	}
-	if err = m.SyncBranches(ctx); err != nil {
-		return err
+	if err = m.syncBranches(ctx); err != nil {
+		return false, err
 	}
 	after, err := m.Branches(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	previous := map[string]string{}
 	for _, b := range before {
@@ -274,16 +301,16 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		delete(previous, b.Name)
 		if event != "" {
 			if err = m.Events.Publish(ctx, event, b); err != nil {
-				return err
+				return false, err
 			}
 		}
 	}
 	for name := range previous {
 		if err = m.Events.Publish(ctx, "branch_deleted", map[string]string{"name": name}); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (m *Manager) resolveSeed(ctx context.Context, room model.Room, expression string) (*model.SeedResolved, error) {
@@ -414,6 +441,7 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 		room.Seed = *seed
 	}
 	if !Active(room.State) {
+		cachedBranch := false
 		if room.State == "failed" {
 			status, err := m.Kube.ObserveRoom(ctx, id)
 			if err != nil {
@@ -424,6 +452,19 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 			}
 		}
 		if room.Kind == "branch" {
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			cachedBranch, err = m.refresh(refreshCtx)
+			cancel()
+			if ctx.Err() != nil {
+				return result, 0, ctx.Err()
+			}
+			if err != nil && !cachedBranch {
+				return result, 0, err
+			}
+			room, err = m.Get(ctx, id)
+			if err != nil {
+				return result, 0, err
+			}
 			refs, err := m.Git.Branches(ctx)
 			if err != nil {
 				return result, 0, err
@@ -461,6 +502,7 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 			}
 		}
 		room.Generation++
+		room.ClosedAt = nil
 		room.State = "queued"
 		room.Phase = "waiting for build"
 		room.LastError = nil
@@ -475,6 +517,9 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 			if !snapshot.LocalAvailable {
 				room.Phase = "restoring seed"
 			}
+		}
+		if cachedBranch {
+			room.Phase += "；使用缓存的分支信息"
 		}
 	}
 	statusCode := 202
@@ -578,6 +623,7 @@ func (m *Manager) Label(ctx context.Context, id, label string) (model.Room, int,
 			status = 202
 		}
 	}
+	setClosedAt(&room, time.Now().UTC())
 	return room, status, m.save(ctx, room, rt)
 }
 

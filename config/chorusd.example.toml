@@ -9,15 +9,14 @@ users_file = "/var/lib/chorusd/secrets/users.toml"
 signing_key_file = "/var/lib/chorusd/secrets/signing.key"
 
 [git]
-remote = "https://github.com/HCHogan/chorus.git"
+remote = "https://github.com/imdomestic/chorus.git"
 poll_interval = "60s"
 default_branch = "main"
 
 [minecraft]
 version = "26.3"
 java = 25
-# Headscale split DNS 配置完成后改为 chorus.internal。
-zone = "100-64-0-43.sslip.io"
+zone = "chorus.internal"
 image = "itzg/minecraft-server:java25@sha256:7462fe34a56686719463ff898a674c1a1ce802988138d2bfdeff2507fb1644e8"
 whitelist = ["linWhite"]
 # 等待用户提供 hank 的 Minecraft 用户名。
@@ -64,13 +63,13 @@ start_timeout = "5m"
 default_seed = "empty"
 
 [archive]
-enabled = false
+enabled = true
 keep_per_room = 5
 keep_days = 14
-tank_target = "tank:/srv/archive/chorus"
+tank_target = "chorus-archive@tank.inner.imdomestic.com:/srv/archive/chorus"
 tank_bwlimit = "5M"
-# 生产身份由用户提供；启用前继续保留全部热缓存文件。
-identity_file = ""
+identity_file = "/var/lib/chorusd/ssh/id_ed25519"
+known_hosts_file = "/var/lib/chorusd/ssh/known_hosts"
 
 [assets]
 world_scanner = "/var/lib/chorusd/world-scanner"

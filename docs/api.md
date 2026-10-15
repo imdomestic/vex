@@ -66,9 +66,11 @@ mc-router webhook 是部署内部接口，只接受受信任的 mc-router 调用
 | BuildSummary | `id:string`、`status:queued\|building\|ready\|failed` |
 | Branch | `name:string`、`head:SHA`、`rooms:{loader:roomId}`、`builds:{loader:BuildSummary\|null}` |
 | Commit | `sha:SHA`、`parents:SHA[]`、`subject:string`、`author:string`、`time:timestamp`、`refs:string[]`、`builds:{loader:BuildSummary\|null}` |
-| Node | `name:string`、`ready:boolean`、`schedulable:boolean`、`maxRunning:integer`、`rooms:roomId[]` |
+| Node | `name:string`、`ready:boolean`、`schedulable:boolean`、`maxRunning:integer`、`rooms:roomId[]`、`rootFreeBytes:integer|null` |
 
 Branch/Commit 的 builds 表示对应 SHA 的当前构建；尚无构建或已被淘汰时，该 loader 的值为 `null`。`refs` 是当前指向该提交的 ref 显示名称，`parents` 保持 Git 父节点顺序。Commit 数组按拓扑顺序返回，同一提交只出现一次。Node 的 rooms 是当前分配到该节点、尚未 closed 的房间 ID。
+
+`rootFreeBytes` 为节点根分区对普通用户可用的字节数。chorusd 在 encore 本机采样 `/`；其他未采样节点返回 null。encore 小于 `20 * 1024^3` 字节时，Ruri Chorus 在 Chorus 分区显示磁盘空间提示。
 
 ### 2.2 Build
 
@@ -116,8 +118,13 @@ BuildFile 为 `{name:string,sha256:string,size:integer,side:"both"|"server"|"cli
 | `lastSnapshot` | 最新成功快照的 capturedAt；尚无快照为 null |
 | `lastError` | Error 或 null |
 | `createdAt`、`updatedAt` | 登记时间、最后状态更新时间 |
+| `closedAt` | 本次进入 closed 的时间；其他状态为 null；重新开启时清空 |
 
 房间登记时已经确定 SHA 和 buildId，但对应 Build 可以尚未进入构建队列。branch 运行期间远端 head 移动只改变 behindHead；下一启动周期才固定新 head。
+
+未运行的 branch 房间接受新启动周期前，执行一次最多十秒的远端 fetch；失败时使用镜像中的分支信息，start 响应的 phase 注明“使用缓存的分支信息”。正在运行的房间保持原周期的 SHA。
+
+commit/asset 房间关闭超过三十天、没有被保留快照或运行房间的种子引用时，删除房间记录并永久保留 roomId 对应的 generation 计数。同一 ID 重新登记后继续递增，保证快照 ID 不重复。历史 closed 记录的 closedAt 使用升级前的 updatedAt 补录。客户端“最近关闭”只列出 closedAt 在七天内的临时房间，按关闭时间降序最多十个；点击通过原 start 接口重新开启。
 
 SeedResolved 只有以下三种对象，引用的内容固定到不可变文件版本：
 
@@ -139,11 +146,13 @@ Lease 为 `{id:string,generation:integer,expiresAt:timestamp}`。服务端另外
 | PackRef | `id:string`、`rev:SHA256` |
 | Source | `repo:string`、`commit:SHA`、`scale:number`、`notes:string` |
 | AssetMetadata | `id:string`、`title:string`、`minecraft:string`、`requires:Requirements`、`resourcePack:PackRef\|null`、`source:Source` |
-| AssetRevision | AssetMetadata 的全部字段，以及 `rev:string`、`snapshotId:string\|null`、`world:{sha256:string,size:integer,url:string}`、`createdAt:timestamp` |
+| AssetRevision | AssetMetadata 的全部字段，以及 `rev:string`、`snapshotId:string\|null`、`world:{sha256:string,size:integer,url:string}`、`createdAt:timestamp`、`tankVerifiedAt:timestamp\|null` |
 | Asset | `id:string`、`title:string`、`state:active\|archived`、`latestRev:string`、`minecraft:string`、`requires:Requirements`、`resourcePack:PackRef\|null`、`restore:AssetRestore\|null` |
 | PackRevision | `id:string`、`rev:SHA256`、`sha256:SHA256`、`sha1:40位小写十六进制`、`size:integer`、`url:string`、`createdAt:timestamp` |
 
 Asset 的 title、minecraft、requires、resourcePack 来自 latestRev。AssetRevision 的元数据、世界文件和资源包引用发布后不可变。普通资产发布的 snapshotId 为 null；promote 填写编辑候选的 Snapshot ID。`world.url` 为 `/v1/assets/{id}/revisions/{rev}/download`。
+
+AssetRevision.tankVerifiedAt 在世界文件、元数据以及所引用资源包的 ZIP 和元数据全部完成 tank 校验后填写，取这些传输任务验证时间中的最晚值。缺少任务、任务未完成或缺少验证时间时返回 null。归档循环同时补录既有版本。
 
 发布工具扫描真实世界的区块调色板和物品命名空间，将全部非 `minecraft` 的命名空间去重、排序后写入 `requires.namespaces`。兼容性检查要求实际目标 revision 的 `minecraft == Build.minecraft`、目标 loader 位于 `requires.loaders`、`namespaces ⊆ Build.modIds`。chorusMod 为 true 时使用包含 chorus 的构建。缺少命名空间时返回 `409 build_mismatch`，message 列出缺少的名称。资产房间和 hop 使用同一检查规则。
 

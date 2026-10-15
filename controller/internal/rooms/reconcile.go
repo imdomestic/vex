@@ -50,6 +50,13 @@ func (e *roomReconcileErrors) Unwrap() error { return e.cause }
 func (m *Manager) Reconcile(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	if now.Sub(m.lastPrune) >= time.Hour {
+		if err := m.pruneClosed(ctx, now); err != nil {
+			return err
+		}
+		m.lastPrune = now
+	}
 	rooms, err := m.List(ctx)
 	if err != nil {
 		return err
@@ -485,6 +492,9 @@ func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, s
 func (m *Manager) Nodes(ctx context.Context) ([]model.Node, error) {
 	nodes, err := m.Kube.Nodes(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err = sampleRootSpace(nodes); err != nil {
 		return nil, err
 	}
 	rooms, err := m.List(ctx)
