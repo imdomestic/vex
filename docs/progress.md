@@ -8,6 +8,8 @@
 
 第三轮 A、B 通过；C、D 正在部署验收。真实房间记录清理后重新启动生成独立 g2 快照，资产全部任务校验及时间回填通过。详情见 `reports/2026-10-15-round3.md`。
 
+04:02 JST：服务端更新及 plaza 1–3 归档时间补录通过；真实 SSE 重启正常结束。普通 Nix GC 后根分区可用 30.349 GiB，旧 Minecraft roots 和用户系统 generation 全部保持。证据 `.work/round3/application-fields.json`、`gc-after.json`。
+
 03:50 JST：真实 Minecraft、SQLite、tank 的 generation 延续测试通过，namespace 已删除；资产四项传输完整性、已有记录回填及元数据摘要检查通过。日志 `.work/round3/retention-test.log`、`.work/round3/asset-verification.log`。
 
 03:44 JST：新来源与原镜像 336 个提交连续，全部生产引用存在；main generation 9 真实进入、SLP online=1、正常停止归档通过。日志 `.work/round3/migration-finished.json`。
