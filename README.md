@@ -34,6 +34,6 @@ chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 
 
 Go 单元测试从 `controller/` 执行 `go test ./...`，集成测试使用 `-tags integration`，连接真实组件；临时目录与 Go 缓存放在仓库 `.work/` 下。Fabric 模组位于 `hop-mod/`，世界扫描工具位于 `tools/world-scanner/`。
 
-Nix 包与 module 位于 `nix/`，通过 `nix/bootstrap` 的 extendModules 组合 encore 系统。系统部署必须遵守执行指令的构建、dry-activate、定时恢复、test、新 SSH 检查与持久切换流程。具体说明见 [Nix 部署](nix/bootstrap/README.md)。
+系统配置由 `imdomestic/nix-config` 管理；应用由仓库根目录的 Nix flake 构建并安装到 `/nix/var/nix/profiles/chorus`。系统部署执行构建、dry-activate、定时恢复、test、新 SSH 检查与持久切换流程。具体说明见 [部署说明](deploy/README.md)。
 
 用户凭据和签名密钥由文件路径提供；凭据内容不得写入命令参数、日志、文档或 Git。旧 Minecraft 文件、归档和服务 masked 状态保持保留。

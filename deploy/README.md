@@ -1,28 +1,40 @@
-生产部署源码在 encore 的 `/home/linwhite/chorus-testbed`，裸仓库在 `/home/linwhite/git/chorus-testbed.git`。本目录脚本使用项目 `.work/temp`；Nix builder 使用 `/nix/var/nix/builds`。全部系统切换遵循 [2026-10-15 执行指令 §6.4](../docs/directives/2026-10-15-decisions.md)。
+生产系统由 `imdomestic/nix-config` 管理；应用由 chorus-testbed 构建并安装到 `/nix/var/nix/profiles/chorus`。encore 的应用源码目录为 `/home/linwhite/chorus-testbed`，同步远端为 `/home/linwhite/git/chorus-testbed.git`。临时资料使用项目 `.work/`，Nix builder 使用 `/nix/var/nix/builds`。
 
-每次部署执行以下顺序：
+## 应用更新
 
-1. 同步已经验证的源码，运行 `bash deploy/build-system.sh`。脚本构建 `encore-chorus`，保存 `.work/activation/candidate-system`、GC root 和 `dry-activate.log`。检查构建结果及服务差异，确认 k3s、数据库、SSH 与十二个旧 Minecraft 单元保持规定状态。
-2. 在 Mac 执行 `bash deploy/activate-from-mac.sh update /nix/store/<已审阅的系统路径>`。脚本通过内容校验确认本地与 encore 的 controller 源码一致，再重新构建并验证候选路径。源码或候选变化时立即退出，系统继续运行当前配置。
-3. 脚本取得共享构建锁、确认没有正在运行的构建，并停止已经完成且为 `active/exited` 的构建单位，随后保存 `/run/current-system`。通过 `systemd-run --on-active=600 --unit=chorus-revert` 安排旧系统的 `switch-to-configuration test`，随后对候选执行 `test`。
-4. 使用新的 SSH 连接验证 `k3s`、`mysql`、`postgresql`、`chorusd`、`dnsmasq` 均为 active，encore 为 Ready，十二个旧 Minecraft 单元均为 masked/inactive。继续检查真实 API 鉴权健康请求、Mac 到 8790 的连通性、DNS UDP/TCP 查询。
-5. 全部检查通过后停止恢复 timer，设置持久系统 profile，再执行候选的 `switch`。脚本核对运行路径与 profile 相同，并写入 `.work/activation/persisted-system`。任何检查失败时保留自动恢复 timer，不执行持久切换。
+在 encore 同步已通过测试的源码，执行：
 
-首次迁移使用 `deploy` 参数。`prepare-production.sh` 在确认构建空闲、磁盘余量和 SQLite 状态后，停止前台 P1 控制器，将数据与相同秘密复制到正式目录，并核对内容与 SQLite 记录数量。原 P1 数据继续保留；后续更新固定使用 `update` 参数。
+```sh
+bash deploy/build-application.sh
+bash deploy/install-application.sh deploy "$(cat .work/application/candidate)"
+```
 
-脚本的职责如下：
+构建产物包含 chorusd、chorusctl 和 chorus-world-scanner。构建执行 Go 格式检查与全部普通测试；脚本检查磁盘至少剩余 15 GiB，取得全局构建锁，更新 Nix profile，重启 chorusd，并验证真实鉴权健康接口。Nix profile 保留历史 generation。初次系统迁移使用 `prepare` 参数预先安装 profile。
 
-| 脚本 | 操作 |
-| --- | --- |
-| `bootstrap.sh` | 部署两个 namespace、RBAC、mc-router，并生成受限 kubeconfig |
-| `build-system.sh` | 构建完整系统、建立 GC root、输出 dry-activate 差异 |
-| `test-system.sh` | 核对基础服务与旧单元，设置 600 秒恢复 timer，执行候选 test |
-| `check-system.sh` | 在新的 SSH 连接中检查实际服务、节点、API 与 DNS |
-| `persist-system.sh` | 验证最近的 SSH 检查凭证，停止 timer，持久化并执行 switch |
-| `install-hop.sh` | 持有共享构建锁，安装固定 SHA-256 的 `chorus-hop` jar 并再次校验 |
-| `test-kube.sh`、`test-pod-network.sh` | 在隔离 namespace 中执行真实 Kubernetes 与 Pod 网络验证 |
-| `verify-room-mods.py` | 对实际房间逐个核对 jar 名称、大小与 SHA-256 |
+## 系统更新
 
-正式目录包括 `/srv/chorus`、`/var/lib/chorusd/config.toml`、`/var/lib/chorusd/kubeconfig` 和 `/var/lib/chorusd/secrets/`。用户 token 使用 `[users]` TOML，签名密钥为原始 32 字节。目录与凭据只在本地受限路径保存，部署日志不输出凭据内容。
+nix-config 管理 k3s、metrics-server、`chorus-dns`、防火墙、旧 Minecraft 单元屏蔽、GC roots、用户与目录规则、polkit、构建模板、chorusd 服务单元和 JDK。chorusd 与构建模板的 ExecStart 固定指向应用 profile。secrets 继续通过 `/var/lib/chorusd/secrets/` 中的文件提供。
 
-每次真实构建通过固定的 `chorus-build@<buildId>.service` 执行同一个 Go 二进制的 `build-worker` 子命令。控制器管理排队与事务，systemd 限制整个构建进程组，`/srv/chorus-build.lock` 串行化 Gradle。构建日志位于 `/srv/chorus/builds/<buildId>/`，服务工作目录为 `/srv/chorus/work/<buildId>`。
+在 encore 使用准备部署的 nix-config checkout 构建，并审阅 dry-activate、nix-diff 与闭包差异：
+
+```sh
+bash deploy/build-system.sh /home/linwhite/chorus-testbed/.work/nix-config-round2
+```
+
+然后在 Mac 使用已审阅的系统路径执行：
+
+```sh
+bash deploy/activate-from-mac.sh /home/linwhite/chorus-testbed/.work/nix-config-round2 /nix/store/<已审阅的系统路径>
+```
+
+脚本重新构建并确认路径一致；核对 k3s、数据库、SSH、Tailscale、防火墙服务内容及十二个旧 Minecraft 单元；取得构建锁；设置 600 秒自动恢复任务后执行 `test`。全新的 SSH 连接检查 k3s、mysql、postgresql、chorusd、chorus-dns、真实 API、DNS 和旧服务 masked/inactive 状态。全部通过后取消 timer，再持久化并执行 `switch`。检查失败时保留恢复 timer。
+
+系统配置验证后提交并推送 nix-config；使用刚推送远端的全新克隆执行 `nixos-rebuild build --flake .#encore`，核对独立复现结果。应用仓库与旧系统内容均不作为 nix-config 的私有输入。
+
+## 构建与集成检查
+
+`deploy/build-controller.sh` 执行 Go 格式检查、测试与二进制构建；`deploy/test-kube.sh` 在 `chorus-it-*` 隔离 namespace 检查真实 Kubernetes 组件；其他集成测试使用 `integration` build tag。禁止替换依赖的测试实现。生产房间验收使用真实 Minecraft、RCON、mc-router SLP 和签名后的 Ruri Chorus CLI。
+
+Fabric 构建通过 `chorus-build@<buildId>.service` 执行 `build-worker`，systemd 限制整个构建进程组，`/srv/chorus-build.lock` 保证同一时刻只有一个 Gradle 构建。生产数据为 `/srv/chorus`，配置为 `/var/lib/chorusd/config.toml`，kubeconfig 为 `/var/lib/chorusd/kubeconfig`。
+
+`nix/bootstrap` 与 `prepare-production.sh` 保留首次环境搭建资料。生产更新使用上述系统、应用两层流程。

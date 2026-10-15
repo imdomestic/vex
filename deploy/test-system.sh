@@ -9,7 +9,7 @@ old=$(readlink -f /run/current-system)
 test -f "$project/.work/activation/data-migrated"
 test -x "$candidate/bin/switch-to-configuration"
 [[ "$candidate" != "$old" ]]
-for unit in k3s mysql postgresql sshd; do
+for unit in k3s mysql postgresql sshd tailscaled nftables; do
   systemctl is-active --quiet "$unit"
   cmp "$old/etc/systemd/system/$unit.service" "$candidate/etc/systemd/system/$unit.service"
   if test -d "$old/etc/systemd/system/$unit.service.d"; then

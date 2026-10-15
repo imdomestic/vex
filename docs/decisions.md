@@ -124,6 +124,10 @@ encore 同时运行两个 ready 房间与一次 Fabric 构建时，14 次重叠�
 
 用户已通过 GitHub Fork 创建 public 的 imdomestic/ruri-chorus，保留 upstream 并添加 origin。首次推送前扫描 dev、P3、P4 全部分支完整历史，包括 SSE、文档、日志、签名 URL 与凭据；有实际敏感内容时停止推送。
 
+## 2026-10-15 第二轮：独立应用 profile 与旧系统保留
+
+nix-config 的服务单元引用 `/nix/var/nix/profiles/chorus`，应用更新独立构建、设置 profile、重启并检查真实鉴权接口。旧 Minecraft 的两个完整系统通过独立 GC roots 保留，原有 43 个 runtime roots 保留；系统求值无需读取旧 store 内容。
+
 ## 2026-10-15 第二轮：后台循环与构建保留
 
 Git 镜像先在本地初始化，API 启动读取已有内容；独立后台任务刷新远端。构建器、事件总线、归档及 Git 循环失败后记录原因，按 1 秒起逐次倍增、最高 60 秒重新执行。

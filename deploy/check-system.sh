@@ -8,7 +8,7 @@ candidate=$(cat "$project/.work/activation/candidate-system")
 [[ -n ${SSH_CONNECTION:-} ]]
 [[ $(readlink -f /run/current-system) == "$candidate" ]]
 systemctl is-active --quiet chorus-revert.timer
-for unit in k3s mysql postgresql chorusd dnsmasq; do
+for unit in k3s mysql postgresql chorusd chorus-dns; do
   systemctl is-active --quiet "$unit"
   printf '%s active\n' "$unit"
 done

@@ -4,7 +4,11 @@
 
 ## 当前阶段
 
-P0、P1、P5、P6 通过。P2 的 encore 自动验收全部通过，节点集群验收待 seraph。P3/P4 已完成构建、144 项回归及 41 项附加测试、真实 API 与旧提交启动计划验证；真实进入待用户登录。生产 tank 同步等待用户提供身份，热缓存全部保留。P7 今晚不执行。
+第二轮 B 修复已部署，真实 main-fabric 进入、十分钟空闲停止和方块保存检查通过。C 已受保护切换至 nix-config；D/E 正在执行。A 指定房间 GUI 验收待用户，H 首次推送随之等待；F 配置与构建通过，tank sudo 授权待用户。G 合并与完整 pytest 通过。
+
+18:58 JST：encore 运行系统和持久系统均为 `gaya9a3803rbyywjlkskks9lcjbanz96`，关键服务与十二个旧 Minecraft 单元检查通过。证据 `.work/round2-c-activation.log`。
+
+18:56 JST：main-fabric generation 6 读取到停止前放置的绿宝石方块；自动停止副本数为零，PVC UID 保持一致。证据 `.work/round2-b-idle.log`、`.work/round2-b-persistence.log`。
 
 需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；本晚执行以 `directives/2026-10-15-decisions.md` 为准。
 
