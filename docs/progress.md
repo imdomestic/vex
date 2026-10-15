@@ -4,13 +4,21 @@
 
 ## 当前阶段
 
-第二轮 B 修复已部署，真实 main-fabric 进入、十分钟空闲停止和方块保存检查通过。C 已受保护切换至 nix-config；D/E 正在执行。A 指定房间 GUI 验收待用户，H 首次推送随之等待；F 配置与构建通过，tank sudo 授权待用户。G 合并与完整 pytest 通过。
+第二轮 B–G 通过：服务端修复、系统迁移、seraph、split DNS、生产归档与 d2-map-dev 合并均完成。A 指定房间 GUI 验收待用户，H 首次推送随之等待；全部待推送历史的凭据扫描通过。详情见 `reports/2026-10-15-round2.md`。
+
+19:42 JST：tank 生产归档已验证 12 个快照与 plaza 的 3 个版本，共 30 个文件；远端 SHA256、大小和验证时间均通过。nix-config 已推送至 `4b80889`。证据 `.work/round2-f/production-archive-verification.json`。
+
+19:34 JST：`chorus.internal` 的 Mac 系统解析、Service 注解、SLP 身份及 Ruri Chorus CLI 真实进入 main-fabric 均通过；客户端正常退出，主房间已停止并保留 PVC。证据 `.work/round2-e-entry.log`、`.work/round2-e-session.log`。
+
+19:25 JST：真实 commit 房间调度到 seraph，停止 k3s 后两次进入 lost；原 Pod 恢复与停止归档两条路径均通过，测试 namespace 已清理。证据 `.work/seraph-recovery-test.log`。
+
+19:19 JST：失败房间的域名同步通过真实 Minecraft 集成并独立部署，生产 API 健康。证据 `.work/round2-rooms-zone-test.log`、`.work/round2-zone-app-deploy.log`。
 
 18:58 JST：encore 运行系统和持久系统均为 `gaya9a3803rbyywjlkskks9lcjbanz96`，关键服务与十二个旧 Minecraft 单元检查通过。证据 `.work/round2-c-activation.log`。
 
 18:56 JST：main-fabric generation 6 读取到停止前放置的绿宝石方块；自动停止副本数为零，PVC UID 保持一致。证据 `.work/round2-b-idle.log`、`.work/round2-b-persistence.log`。
 
-需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；本晚执行以 `directives/2026-10-15-decisions.md` 为准。
+需求来源：`/Users/linwhite/Downloads/chorus-testbed-待确认文件-2026-10-14/chorus-testbed-plan.md`；当前执行以 `directives/2026-10-15-round2.md` 为准。
 
 ## P0 已核实事实
 
@@ -71,23 +79,23 @@
 | --- | --- | --- |
 | P0 | 集群、存储、构建、镜像实际启动、ruri 构建和测试、环境报告 | 通过 |
 | P1 | controller 实际创建房间与 SLP 核验、Mac 进入、缓存命中、Go 验证、DNS | 通过 |
-| P2 | 10 分钟回收、世界保留、节点调度及失联、controller 重启接管 | encore 全部通过；待 seraph 的调度与失联验收 |
-| P3 | 服务器页面自动进入、模组替换、明确错误、测试验证 | 自动化通过；新应用登录与真实进入待用户 |
+| P2 | 10 分钟回收、世界保留、节点调度及失联、controller 重启接管 | 通过；seraph 调度和两条真实失联恢复流程通过 |
+| P3 | 服务器页面自动进入、模组替换、明确错误、测试验证 | 自动化、钥匙串和 CLI 进入通过；指定目的地 GUI 验收待用户 |
 | P4 | 合并提交图、旧提交房间进入、失败日志 | 自动化通过；真实进入待用户 |
 | P5 | plaza 资产发布、游戏内往返 transfer、构建约束、资源包 | 通过；资源包 N/A |
-| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 通过；生产同步待用户提供 SSH 身份 |
+| P6 | 断线后同步、远端校验后淘汰、快照恢复并启动 | 通过；专用归档身份已部署，生产对象全部同步校验 |
 
 ## 使用的默认值
 
 - 项目目录使用默认名称 `chorus-testbed`。
 - 生产数据目录为 `/srv/chorus`，属主 chorusd；用户凭据位于 `/var/lib/chorusd/secrets/`。
-- 生产 tank 同步关闭，热缓存保留全部文件；当前 Minecraft zone 为 `100-64-0-43.sslip.io`。
+- 当前 Minecraft zone 为 `chorus.internal`，Headscale split DNS 与 Mac 系统解析已通过。
 
 ## 需要用户确认
 
-- 待用户：独立 Ruri Chorus 登录与 P3/P4 真实进入、split DNS、tank 生产 SSH 身份、两个 GitHub 远端、d2 发布分支审阅。
-- 待 hank：Minecraft 用户名与 token 安全交付；待 seraph：加入 k3s 后的调度及失联验收。
-- 已实施的自主选择供复核：固定 systemd 构建模板、EventSource 1.4.0 与专属钥匙串、SDL 客户端启动和正常退出方式、LAN 控制下的 Tailscale 故障测试。详情见 `decisions.md`，具体操作见晨报。
+- 待用户：独立 Ruri Chorus 在服务器页进入 main-fabric，并从 Git 页进入 cb7f59da；完成后推送已扫描的 ruri 分支。
+- seraph 下次真实关机时观察世界保存；自动化已验证 kubelet 宽限配置和两条恢复流程。
+- chorus 来源迁移与 chorus-testbed 的 GitHub 远端等待 HCHogan 完成迁移；hank 事项按第二轮指令暂不处理。
 
 ## 用户已确定的配置
 

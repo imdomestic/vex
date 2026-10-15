@@ -2,7 +2,7 @@
 
 ## 2026-10-15：执行依据与接口
 
-按 `directives/2026-10-15-decisions.md` 执行，P0 已通过；接口统一以 `api.md` 为准。
+按 `directives/2026-10-15-round2.md` 执行，未覆盖事项遵循第一轮指令；接口统一以 `api.md` 为准。
 接口变化先修改契约并记录决定，阶段验证使用测试结果和简短日志。
 
 ## 2026-10-15：来源、构建和镜像
@@ -19,7 +19,7 @@ chorusd 通过仅允许该模板 start、stop、reset-failed 的 polkit 规则�
 ## 2026-10-15：部署地址和数据
 
 chorusd 监听 `100.64.0.43:8790`、`10.1.2.137:8790`，公开地址为 `http://encore.inner.imdomestic.com:8790`，内部地址为 `http://10.1.2.137:8790`。
-数据位于 `/srv/chorus`，属主 chorusd；Nix 包与 module 通过现有 extendModules 组合，每次系统切换执行指令 §6.4 的定时恢复和新 SSH 检查。
+数据位于 `/srv/chorus`，属主 chorusd；系统由 nix-config 管理，应用使用独立 Nix profile，每次系统切换执行指令 §6.4 的定时恢复和新 SSH 检查。
 
 ## 2026-10-15：代码同步和凭据
 
@@ -28,8 +28,8 @@ encore 裸仓库 `~/git/chorus-testbed.git` 作为 `encore` remote；今晚仅�
 
 ## 2026-10-15：DNS
 
-dnsmasq 仅为 `chorus.internal` 应答，监听 tailnet 与 LAN 地址，启用 no-resolv、bind-dynamic；仅在 tailscale0、wlo1 开放要求的 DNS、HTTP 和 Minecraft 端口。
-Mac 可免密码 sudo 时配置 resolver，否则验证并使用临时 zone `100-64-0-43.sslip.io`，晨间切回；reconciler 随配置同步已有 Service 注解。
+`chorus-dns` 使用 dnsmasq 仅为 `chorus.internal` 应答，监听 tailnet 与 LAN 地址，启用 no-resolv、bind-dynamic；在 tailscale0、wlo1 开放要求的 DNS、HTTP 和 Minecraft 端口。
+Headscale 的 split DNS 将 `chorus.internal` 交给 `100.64.0.43`；生产 zone 使用 `chorus.internal`，Mac 系统解析与真实进房已通过。reconciler 随配置同步已有 Service 注解。
 
 ## 2026-10-15：白名单、容量和空闲时间
 
@@ -39,17 +39,17 @@ Mac 可免密码 sudo 时配置 resolver，否则验证并使用临时 zone `100
 ## 2026-10-15：独立 Ruri Chorus
 
 本地仓库 `/Users/linwhite/ruri-chorus` 使用 upstream 和 dev；应用名 `Ruri Chorus`，bundle id `dev.ruri.launcher.chorus`，支持目录为 `~/Library/Application Support/Ruri Chorus`，禁用 Sparkle。
-构建统一使用 swiftbuild；已安装 Ruri 只允许指令 §5.3 的一个测试实例，独立应用的真实进入等待用户登录，自动化验证启动计划。
+构建统一使用 swiftbuild 和用户的 Apple Development 身份；GUI 与 CLI 使用相同 designated requirement，Chorus token 在进程内缓存。原版 Ruri 保留已有测试实例，后续验收使用独立应用。
 
 ## 2026-10-15：资产发布
 
-d2-map-dev 的 `feat/chorus-publish` 新增 `d2map chorus publish`，保留现有 `worlds.publish(cfg)`；该分支留给用户审阅。
+d2-map-dev 的 `feat/chorus-publish` 新增 `d2map chorus publish`，保留现有 `worlds.publish(cfg)`；用户审阅通过后已合入本地 master，完整 pytest 通过。
 首个资产 plaza 使用指定 sample/world；扫描非 minecraft 命名空间，必要运行时 jar 由依赖接口向所有 Fabric 构建下发；资源包按敏感资料处理。
 
 ## 2026-10-15：归档身份
 
-生产归档根目录使用 `tank:/srv/archive/chorus/` 下的 snapshots、assets、packs；等待用户提供生产 SSH 身份期间，生产同步关闭、热缓存文件全部保留。
-P6 使用现有身份向独立 `it-<时间戳>` 路径进行真实同步验证，保留全部远端测试文件并记录路径。
+生产归档使用 `chorus-archive@tank.inner.imdomestic.com:/srv/archive/chorus` 下的 snapshots、assets、packs，专用目录权限为 0750；同步限速 5M，每个文件经过远端摘要和大小验证后才允许淘汰热缓存。
+专用 ed25519 身份和 known_hosts 保存在 `/var/lib/chorusd/ssh/`，SSH 公钥限制来源为 encore 的 `100.64.0.43`，账号没有 sudo 权限，不能写入 legacy；全部既有归档和测试文件保留。
 
 ## 2026-10-15：Build、generation 和状态冲突
 
@@ -111,14 +111,14 @@ Gradle 使用 P0 已经真实生成的 Gradle/NeoForm 缓存；Fabric 任务继�
 
 ## 2026-10-15：tank 集成验收
 
-测试沿用 encore 的现有 SSH 身份，并使用 Mac 已信任的 tank 主机公钥进行严格校验；生产同步继续关闭。
+P6 测试沿用 encore 的现有 SSH 身份，并使用 Mac 已信任的 tank 主机公钥进行严格校验。
 实际 Tailscale 中断验收通过已验证的独立 LAN SSH 控制：预设 90 秒恢复任务，暂停 tailscaled 65 秒，再核对真实队列重试、远端摘要和大小。验收期间没有运行中的游戏或 Gradle 构建；测试文件永久保留在独立 it 时间戳目录。
 同一保护任务负责恢复 tailscaled 与原本运行的 tailscale-device-rtt、tailscale-path-metrics 两个监控 timer；验收期间暂停这两个 timer，完成后验证其恢复运行。
 
 ## 2026-10-15：容量实测
 
 encore 同时运行两个 ready 房间与一次 Fabric 构建时，14 次重叠采样的 MemAvailable 最低为 10.80 GiB，构建并发始终为 1。
-因此 encore 的 max_running 保持 2；seraph 的配置容量保持 4，集群验收等待节点加入。
+因此 encore 的 max_running 保持 2；seraph 的配置容量保持 4，真实 commit 调度和两条 lost 恢复流程均通过。
 
 ## 2026-10-15 第二轮：Ruri 公开仓库
 
@@ -127,6 +127,14 @@ encore 同时运行两个 ready 房间与一次 Fabric 构建时，14 次重叠�
 ## 2026-10-15 第二轮：独立应用 profile 与旧系统保留
 
 nix-config 的服务单元引用 `/nix/var/nix/profiles/chorus`，应用更新独立构建、设置 profile、重启并检查真实鉴权接口。旧 Minecraft 的两个完整系统通过独立 GC roots 保留，原有 43 个 runtime roots 保留；系统求值无需读取旧 store 内容。
+
+## 2026-10-15 第二轮：tank 系统部署身份
+
+tank 系统由 nix-config 声明专用归档用户。部署使用已经验证的现有管理 SSH 身份，执行系统切换保护与严格主机密钥检查；生产同步使用独立的 chorus-archive 身份。
+
+## 2026-10-15 第二轮：seraph 关机保护
+
+seraph 的 k3s agent 使用 LAN 与 encore 通信；kubelet 正常关机宽限期为 150 秒，关键 Pod 为 10 秒。实际配置和 shutdown inhibitor 已验证，真实关机时的世界保存由用户下次关机时观察。
 
 ## 2026-10-15 第二轮：后台循环与构建保留
 
@@ -176,7 +184,7 @@ hop 的 canonical 下载文件名采用 SHA-256，文件保存在对应 Minecraf
 
 用户已要求在 encore 搭建 k3s，并允许在构建阶段归档现有 Minecraft 服务的数据。六个旧服务在归档恢复校验通过后停用，原始文件保持保留。归档包含世界、完整配置、数据库和恢复所需的 Nix 运行依赖。
 
-`imdomestic/nix-config` 保持只读。k3s 配置在本项目中单独提供，系统切换前核验原有配置与服务影响。
+`imdomestic/nix-config` 统一管理系统配置；系统切换前核验原有配置与服务影响，验证后提交并正常推送主分支。
 
 ## 2026-10-14：ruri 的本机构建方式
 

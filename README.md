@@ -1,13 +1,13 @@
 # Chorus Testbed
 
-chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 归档；独立客户端 Ruri Chorus 提供服务器和 Git 页面。执行结果见 [晨报](docs/morning-report.md)，接口定义见 [API](docs/api.md)，配置选择见 [决策](docs/decisions.md)。
+chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 归档；独立客户端 Ruri Chorus 提供服务器和 Git 页面。执行结果见 [第二轮报告](docs/reports/2026-10-15-round2.md)，接口定义见 [API](docs/api.md)，配置选择见 [决策](docs/decisions.md)。
 
 ## 运行位置
 
 | 项目 | 位置 |
 | --- | --- |
 | API | `http://encore.inner.imdomestic.com:8790` |
-| Minecraft 当前域名 | `<room>.100-64-0-43.sslip.io:25565` |
+| Minecraft 当前域名 | `<room>.chorus.internal:25565` |
 | 生产配置 | encore `/var/lib/chorusd/config.toml` |
 | 数据 | encore `/srv/chorus` |
 | 用户 token | encore `/var/lib/chorusd/secrets/users.toml` |
@@ -15,7 +15,7 @@ chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 
 | 本地客户端仓库 | `/Users/linwhite/ruri-chorus` |
 | encore Git remote | `encore:/home/linwhite/git/chorus-testbed.git` |
 
-源码目前读取 HCHogan/chorus 的 main，后续仓库更换要求见 [REPOSITORY-MIGRATION.md](REPOSITORY-MIGRATION.md)。生产 tank 同步关闭，全部热缓存文件保留；启用条件见晨报。
+源码目前读取 HCHogan/chorus 的 main，后续仓库更换要求见 [REPOSITORY-MIGRATION.md](REPOSITORY-MIGRATION.md)。生产归档通过专用账号 `chorus-archive` 同步到 tank，带宽限制为 `5M`；远端摘要与大小验证成功后才允许淘汰热缓存。
 
 ## 客户端
 
