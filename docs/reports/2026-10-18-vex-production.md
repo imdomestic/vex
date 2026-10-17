@@ -29,7 +29,7 @@ encore 的旧自动部署文件 `/var/lib/rancher/k3s/server/manifests/chorus-me
 
 停止控制器后的最终计划已保存为 [完整迁移计划](2026-10-17-vex-migration-plan.json)，计划 SHA256 为 `3f68af5216fbbb5da938f8a561c56f0fa60a575a5bfcefc161ce3f674233c3fe`。保留 6 个房间、18 个快照、42 条传输、1 个世界和 3 个 revision；与此前审阅计划相比，仅分支房间的观察时间更新，源记录摘要、全部文件摘要与移动目录保持一致。
 
-tank 使用用户已授权的 `.work/vex-p0/tank-migrate.sh`：归档用户保留 UID979/GID970；归档根改为 `/srv/archive/vex`，世界与快照进入 `projects/chorus/`；所有 legacy、it-* 和未完成的传输文件均保留。P0 剩余目录的完整 tar.gz 正在由已打开的文件描述符写入；目录重命名保持该文件的 inode 与传输进程，后续核验使用新路径 `/srv/archive/vex/legacy/vex-p0-20261018/remaining-via-mac.tar.gz`。完整文件核验成功前，encore 的 P0 原目录保持原状。
+tank 使用用户已授权的 `.work/vex-p0/tank-migrate.sh`：归档用户保留 UID979/GID970；归档根改为 `/srv/archive/vex`，世界与快照进入 `projects/chorus/`；所有 legacy、it-* 和未完成的传输文件均保留。P0 剩余目录的完整 tar.gz 正在由已打开的文件描述符写入；目录重命名保持该文件的 inode 与传输进程，后续核验使用新路径 `/srv/archive/vex/legacy/vex-p0-20261018/remaining-via-mac.tar.gz`。05:03:49 JST 时文件为3,817,472,000字节，三个传输进程仍在运行。该项按挂机协议标为卡住：三种方法累计超过90分钟，完整副本校验仍未完成；后台传输继续。完整文件核验成功前，encore 的 P0 原目录保持原状，后续步骤见 P0 报告。
 
 归档集成测试的目标为 `/srv/archive/vex/it-p1-r18b-{archive,queue,world,seed,retention}`。迁移后创建这五个独立空目录，权限 0700，属主 vex-archive；产生的文件全部保留。测试命令与 namespace 清单记录于 P1 报告。
 
