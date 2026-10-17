@@ -134,6 +134,12 @@ func (c Config) Validate() error {
 	if c.Rooms.Heap == "" {
 		return fieldError("rooms.heap", "is required")
 	}
+	if c.Rooms.DefaultSeed != "empty" {
+		kind, id, ok := strings.Cut(c.Rooms.DefaultSeed, ":")
+		if !ok || strings.TrimSpace(id) == "" || (kind != "branch" && kind != "snapshot" && kind != "world") {
+			return fieldError("rooms.default_seed", "requires empty, branch:<name>, snapshot:<id> or world:<id>")
+		}
+	}
 	if c.Worlds.ScannerFile != "" && !filepath.IsAbs(c.Worlds.ScannerFile) {
 		return fieldError("worlds.scanner_file", "requires an absolute path")
 	}

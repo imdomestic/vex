@@ -105,3 +105,43 @@ func TestWorkerTraversalRejectsFileAndSymlink(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerPreparesGeneratedDirectoriesForRemoval(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	generated := filepath.Join(source, "build-logic", "build", "resources", "META-INF")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "plugin.properties"), []byte("implementation-class=BuildPlugin"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "external")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareCheckoutRemoval(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || !entry.IsDir() {
+			return err
+		}
+		info, err := entry.Info()
+		if err == nil && info.Mode().Perm()&0070 != 0070 {
+			t.Errorf("worker directory lacks group access: %s", path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatal("external directory permissions changed", err)
+	}
+	if err := prepareCheckoutRemoval(filepath.Join(source, "external")); err == nil {
+		t.Fatal("accepted a symlink checkout root")
+	}
+}

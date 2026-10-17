@@ -203,6 +203,9 @@ func (m *Manager) syncBranches(ctx context.Context) error {
 				room.SHA = ref.Head
 				room.BuildID = BuildID(ref.Head, loader)
 				room.BehindHead = false
+				if room.Seed == "" && room.SeedResolved == nil {
+					room.Seed = m.Cfg.Rooms.DefaultSeed
+				}
 			}
 			if err = m.DB.Put(ctx, "room", id, room); err != nil {
 				return err

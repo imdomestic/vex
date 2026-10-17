@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/imdomestic/vex/controller/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -363,6 +364,19 @@ func (m *Mirror) RemoveCheckout(ctx context.Context, destination string) error {
 	}
 	if strings.TrimSpace(origin) != m.dir {
 		return fmt.Errorf("checkout belongs to a different repository")
+	}
+	if err := filepath.WalkDir(destination, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if err := unix.Access(path, unix.W_OK|unix.X_OK); err != nil {
+				return fmt.Errorf("checkout directory cannot be removed: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	return os.RemoveAll(destination)
 }

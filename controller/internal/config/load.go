@@ -74,7 +74,7 @@ func Defaults() Config {
 		Auth:    Auth{SigningKeyFile: "/var/lib/vex/secrets/signing.key", SessionTTL: "2160h", InviteTTL: "24h", AdminSocket: "/run/vex/admin.sock"},
 		Users:   map[string]User{}, Projects: map[string]Project{},
 		Build: Build{MaxConcurrent: 1, LockFile: "/var/lib/vex/build.lock"},
-		Rooms: Rooms{Idle: Idle{Commit: "10m", Branch: "10m", World: "10m"}, JoinLease: "3m", StartTimeout: "5m", Heap: "4G"},
+		Rooms: Rooms{Idle: Idle{Commit: "10m", Branch: "10m", World: "10m"}, JoinLease: "3m", StartTimeout: "5m", Heap: "4G", DefaultSeed: "empty"},
 	}
 }
 

@@ -216,7 +216,7 @@ func (m *Manager) attemptDir(value model.Build) string {
 func (m *Manager) apiPrefix() string { return "/v2/projects/" + m.cfg.ID }
 
 func (m *Manager) workDir(value model.Build) string {
-	return filepath.Join(m.cfg.DataDir, "work", value.ID)
+	return filepath.Join(m.cfg.DataDir, "work", value.ID, fmt.Sprintf("attempt-%d", value.Attempt))
 }
 
 func (m *Manager) jobPath(value model.Build) string {
@@ -260,6 +260,10 @@ func (m *Manager) step(ctx context.Context) error {
 		if err = m.Process(ctx, value.ID); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			var stopErr *workerStopError
+			if errors.As(err, &stopErr) {
+				return err
 			}
 			current, readErr := m.Get(ctx, value.ID)
 			if readErr != nil {

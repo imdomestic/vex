@@ -280,6 +280,49 @@ func TestPrepareOperationsRespectServiceLifecycle(t *testing.T) {
 	}
 }
 
+func TestRetryUsesIndependentCheckoutAfterInterruptedCleanup(t *testing.T) {
+	m, commits := realManager(t)
+	ctx := t.Context()
+	value, _, err := m.Request(ctx, commits[0], "fabric", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSource := filepath.Join(m.workDir(value), "source")
+	if err = m.mirror.Checkout(ctx, value.SHA, oldSource); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.RemoveAll(filepath.Join(oldSource, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	legacySource := filepath.Join(m.cfg.DataDir, "work", value.ID, "source")
+	if err = os.MkdirAll(legacySource, 0750); err != nil {
+		t.Fatal(err)
+	}
+	legacyFile := filepath.Join(legacySource, "retained.txt")
+	if err = os.WriteFile(legacyFile, []byte("retained legacy workspace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.fail(ctx, value, context.DeadlineExceeded); err != nil {
+		t.Fatal(err)
+	}
+	next, created, err := m.Request(ctx, commits[0], "fabric", true)
+	if err != nil || !created || next.Attempt != 2 || m.workDir(next) == m.workDir(value) {
+		t.Fatalf("retry workspace: %+v %v %v", next, created, err)
+	}
+	if err = m.Process(ctx, next.ID); err == nil || !strings.Contains(err.Error(), "gradle.properties") || strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("retry did not reach the actual checkout: %v", err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(oldSource, "data.txt")); err != nil || string(contents) != "initial content" {
+		t.Fatal("earlier incomplete checkout changed", err)
+	}
+	if contents, err := os.ReadFile(legacyFile); err != nil || string(contents) != "retained legacy workspace" {
+		t.Fatal("legacy workspace changed", err)
+	}
+	if _, err = os.Stat(filepath.Join(m.workDir(next), "source")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new attempt checkout was not cleaned: %v", err)
+	}
+}
+
 func TestFailedBuildRetentionRemovesLogsAfterSevenDays(t *testing.T) {
 	m, commits := realManager(t)
 	ctx := context.Background()

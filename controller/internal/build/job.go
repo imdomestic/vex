@@ -67,7 +67,7 @@ func (j Job) validate(path string) error {
 	}
 	root := filepath.Dir(filepath.Dir(path))
 	project := filepath.Join(root, "projects", j.Project)
-	work := filepath.Join(project, "work", j.BuildID)
+	work := filepath.Join(project, "work", j.BuildID, fmt.Sprintf("attempt-%d", j.Attempt))
 	if j.Worktree != filepath.Join(work, "source") || j.TempDir != filepath.Join(work, ".work") || j.GradleHome != filepath.Join(project, "cache", "gradle") {
 		return fmt.Errorf("worker paths must belong to the selected project")
 	}
@@ -81,7 +81,7 @@ func (j Job) validate(path string) error {
 	return nil
 }
 
-func Worker(ctx context.Context, jobPath string) error {
+func Worker(ctx context.Context, jobPath string) (resultErr error) {
 	job, err := readJob(jobPath)
 	if err != nil {
 		return err
@@ -97,6 +97,9 @@ func Worker(ctx context.Context, jobPath string) error {
 		return err
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	defer func() {
+		resultErr = errors.Join(resultErr, prepareCheckoutRemoval(job.Worktree))
+	}()
 	for _, directory := range []string{job.TempDir, job.GradleHome} {
 		if err = os.MkdirAll(directory, 0770); err != nil {
 			return err
@@ -116,6 +119,7 @@ func Worker(ctx context.Context, jobPath string) error {
 	command := exec.CommandContext(workerCtx, "bash", args...)
 	command.Dir = job.Worktree
 	command.Env = []string{
+		"CI=true",
 		"HOME=" + job.GradleHome,
 		"JAVA_HOME=" + job.JDKHome,
 		"PATH=" + filepath.Join(job.JDKHome, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -141,4 +145,39 @@ func Worker(ctx context.Context, jobPath string) error {
 		return fmt.Errorf("Gradle failed: %w", err)
 	}
 	return log.Sync()
+}
+
+func prepareCheckoutRemoval(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("checkout root must be a directory")
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		var metadata unix.Stat_t
+		if err := unix.Lstat(path, &metadata); err != nil {
+			return err
+		}
+		if int(metadata.Gid) != os.Getegid() {
+			return fmt.Errorf("checkout directory has a different worker group: %s", path)
+		}
+		if metadata.Mode&0070 == 0070 {
+			return nil
+		}
+		if int(metadata.Uid) != os.Geteuid() {
+			return fmt.Errorf("checkout directory is not removable by the controller: %s", path)
+		}
+		if err := os.Chmod(path, os.FileMode(metadata.Mode&0777)|0070); err != nil {
+			return fmt.Errorf("prepare checkout removal: %w", err)
+		}
+		return nil
+	})
 }

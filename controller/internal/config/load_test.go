@@ -38,6 +38,30 @@ func writeConfig(t *testing.T, data string) string {
 	return path
 }
 
+func TestDefaultSeedConfiguration(t *testing.T) {
+	path := writeConfig(t, projectDocument)
+	resolved, err := LoadDaemon(Options{Args: []string{"--config", path}, Environ: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := resolved.Config.ForProject("example-mod")
+	if err != nil || project.Rooms.DefaultSeed != "empty" {
+		t.Fatalf("project default seed: %q %v", project.Rooms.DefaultSeed, err)
+	}
+	for _, seed := range []string{"", "unknown:main", "branch:", "snapshot:"} {
+		_, err = LoadDaemon(Options{Args: []string{"--config", path, "--rooms.default_seed=" + seed}, Environ: []string{}})
+		if err == nil || !strings.Contains(err.Error(), "rooms.default_seed") {
+			t.Fatalf("invalid seed accepted: %q %v", seed, err)
+		}
+	}
+	for _, seed := range []string{"empty", "branch:main", "snapshot:main-fabric-g1", "world:sample"} {
+		_, err = LoadDaemon(Options{Args: []string{"--config", path, "--rooms.default_seed=" + seed}, Environ: []string{}})
+		if err != nil {
+			t.Fatalf("valid seed rejected: %q %v", seed, err)
+		}
+	}
+}
+
 func TestFourLayersAndProjectIDs(t *testing.T) {
 	path := writeConfig(t, "[rooms.idle]\ncommit = '12m'\n"+projectDocument)
 	resolved, err := LoadDaemon(Options{

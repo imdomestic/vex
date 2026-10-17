@@ -17,7 +17,7 @@ func TestJobRejectsCrossProjectPathsAndCredentialFields(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "projects", "alpha")
 	id := "fabric-123456789abc"
-	work := filepath.Join(project, "work", id)
+	work := filepath.Join(project, "work", id, "attempt-1")
 	job := Job{
 		Version: 1, Project: "alpha", BuildID: id, Attempt: 1,
 		Worktree: filepath.Join(work, "source"), TempDir: filepath.Join(work, ".work"),
@@ -49,6 +49,16 @@ func TestJobRejectsCrossProjectPathsAndCredentialFields(t *testing.T) {
 	foreign.Project = "beta"
 	if err = foreign.validate(path); err == nil {
 		t.Fatal("job file accepted another project identity")
+	}
+	foreign = job
+	foreign.Attempt++
+	if err = foreign.validate(path); err == nil {
+		t.Fatal("job accepted another attempt's worktree")
+	}
+	foreign = job
+	foreign.Worktree = filepath.Join(filepath.Dir(work), "source")
+	if err = foreign.validate(path); err == nil {
+		t.Fatal("job accepted a worktree shared across attempts")
 	}
 	var document map[string]any
 	if err = json.Unmarshal(data, &document); err != nil {

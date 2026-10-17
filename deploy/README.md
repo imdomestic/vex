@@ -43,7 +43,7 @@ bash deploy/install-application.sh prepare "$candidate"
 
 `prepare` 在 vexd 尚未运行时安装应用 profile。已有运行服务的应用更新使用 `deploy` 参数；脚本取得构建锁、确认全部 worker 已退出、正常停止 vexd、安装 profile、启动服务，并验证公开 `/v2/health` 返回正常状态和匿名 `/v2/me` 返回 401。脚本不会停止 Minecraft 房间。
 
-worker 单元为 `vex-build@<project>--<buildId>.service`，读取 `<data_dir>/jobs/<project>--<buildId>.json`，独立账户只运行 Gradle。vexd 负责 Git checkout、SQLite 状态、产物收集和三个文件摘要。已迁移的 Gradle 缓存必须具有 `vex-build` 组的读写权限；凭据、配置中的密钥文件和 SQLite 数据目录保持独立权限。
+worker 单元为 `vex-build@<project>--<buildId>.service`，读取 `<data_dir>/jobs/<project>--<buildId>.json`，独立账户只运行 Gradle。每次构建使用 `<data_dir>/projects/<project>/work/<buildId>/attempt-<n>/source`，任务文件校验相同的 attempt。Gradle 环境设置 `CI=true`，CPU、内存和 worker 数量继续受配置及 systemd 单元限制。vexd 负责 Git checkout、SQLite 状态、产物收集和三个文件摘要；停止 worker 后清理对应源码目录，清理失败会明确记录。已迁移的 Gradle 缓存必须具有 `vex-build` 组的读写权限；凭据、配置中的密钥文件和 SQLite 数据目录保持独立权限。
 
 平台 agent 使用明确的源文件、安装目标和 SHA256：
 

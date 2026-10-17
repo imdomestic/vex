@@ -37,22 +37,14 @@ func (m *Manager) Process(ctx context.Context, id string) error {
 	if value.Status != "queued" && value.Status != "building" {
 		return nil
 	}
-	if m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host" {
-		return m.fail(ctx, value, model.Failure("sandbox_unavailable", "host builds require a trusted project"))
-	}
-	timeout, err := time.ParseDuration(m.cfg.Build.Timeout)
-	if err != nil || timeout <= 0 {
-		return fmt.Errorf("build timeout must be positive")
-	}
-	buildCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	err = m.execute(buildCtx, value)
+	err = m.execute(ctx, value)
 	if err != nil {
+		var stopErr *workerStopError
+		if errors.As(err, &stopErr) {
+			return err
+		}
 		writeCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer done()
-		if value.Status == "building" {
-			err = errors.Join(err, m.unitOperation(writeCtx, value, "stop"))
-		}
 		if writeErr := m.fail(writeCtx, value, err); writeErr != nil {
 			return errors.Join(err, writeErr)
 		}
@@ -80,6 +72,54 @@ func acquireLock(ctx context.Context, file *os.File) error {
 }
 
 func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr error) {
+	resume := value.Status == "building"
+	unitTouched, checkoutOwned, workerLogCopied := resume, false, false
+	worktree := filepath.Join(m.workDir(value), "source")
+	var log *os.File
+	defer func() {
+		defer func() {
+			if log != nil {
+				if resultErr != nil {
+					_, writeErr := fmt.Fprintln(log, resultErr)
+					resultErr = errors.Join(resultErr, writeErr)
+				}
+				resultErr = errors.Join(resultErr, log.Close())
+			}
+		}()
+		if unitTouched {
+			stopCtx, stopDone := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+			stopErr := m.stopWorker(stopCtx, value)
+			stopDone()
+			resultErr = errors.Join(resultErr, stopErr)
+			var unsafeStop *workerStopError
+			if errors.As(stopErr, &unsafeStop) {
+				return
+			}
+			if log != nil && !workerLogCopied {
+				workerLog, err := os.Open(filepath.Join(m.workDir(value), "build.log"))
+				if err == nil {
+					_, copyErr := io.Copy(log, workerLog)
+					resultErr = errors.Join(resultErr, copyErr, workerLog.Close())
+				} else if !errors.Is(err, os.ErrNotExist) {
+					resultErr = errors.Join(resultErr, err)
+				}
+			}
+		}
+		if checkoutOwned {
+			cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer done()
+			resultErr = errors.Join(resultErr, m.mirror.RemoveCheckout(cleanupCtx, worktree))
+		}
+	}()
+	if m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host" {
+		return model.Failure("sandbox_unavailable", "host builds require a trusted project")
+	}
+	timeout, err := time.ParseDuration(m.cfg.Build.Timeout)
+	if err != nil || timeout <= 0 {
+		return fmt.Errorf("build timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if value.Status == "queued" {
 		if err := worldarchive.Space(m.cfg.DataDir); err != nil {
 			return err
@@ -92,7 +132,6 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	if !filepath.IsAbs(m.cfg.Build.JDKHome) {
 		return fmt.Errorf("build jdk_home must be absolute")
 	}
-	resume := value.Status == "building"
 	if !resume {
 		now := time.Now().UTC()
 		value.Status, value.StartedAt = "building", &now
@@ -129,52 +168,24 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 			return err
 		}
 	}
-	log, err := os.OpenFile(filepath.Join(outputDir, "build.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0640)
+	log, err = os.OpenFile(filepath.Join(outputDir, "build.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0640)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if resultErr != nil {
-			_, _ = fmt.Fprintln(log, resultErr)
-		}
-		if err := log.Close(); resultErr == nil {
-			resultErr = err
-		}
-	}()
-	worktree := filepath.Join(m.workDir(value), "source")
 	if !resume {
 		if err = m.mirror.Checkout(ctx, value.SHA, worktree); err != nil {
 			return err
 		}
+	} else {
+		job, err := readJob(m.jobPath(value))
+		if err != nil {
+			return fmt.Errorf("interrupted build has an invalid worker job: %w", err)
+		}
+		if job.Attempt != value.Attempt || job.Project != m.cfg.ID || job.BuildID != value.ID {
+			return fmt.Errorf("interrupted build has no matching worker job")
+		}
 	}
-	unitTouched := resume
-	workerLogCopied := false
-	defer func() {
-		cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer done()
-		if unitTouched {
-			if err := m.unitOperation(cleanupCtx, value, "stop"); err != nil {
-				resultErr = errors.Join(resultErr, err)
-				active, inspectErr := m.unitActive(cleanupCtx, value)
-				if inspectErr != nil || active {
-					resultErr = errors.Join(resultErr, inspectErr)
-					return
-				}
-			}
-			if !workerLogCopied {
-				workerLog, err := os.Open(filepath.Join(m.workDir(value), "build.log"))
-				if err == nil {
-					_, copyErr := io.Copy(log, workerLog)
-					resultErr = errors.Join(resultErr, copyErr, workerLog.Close())
-				} else if !errors.Is(err, os.ErrNotExist) {
-					resultErr = errors.Join(resultErr, err)
-				}
-			}
-		}
-		if err := m.mirror.RemoveCheckout(cleanupCtx, worktree); err != nil {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
+	checkoutOwned = true
 	props, err := properties.LoadFile(filepath.Join(worktree, "gradle.properties"), properties.UTF8)
 	if err != nil {
 		return err
@@ -206,19 +217,15 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 		if err = m.prepareJob(value, loader, worktree); err != nil {
 			return err
 		}
-	} else {
-		job, err := readJob(m.jobPath(value))
-		if err != nil || job.Attempt != value.Attempt || job.Project != m.cfg.ID || job.BuildID != value.ID {
-			return fmt.Errorf("interrupted build has no matching worker job")
-		}
 	}
 	unitTouched = true
 	if err = m.launch(ctx, value, resume); err != nil {
 		return err
 	}
-	if err = m.unitOperation(ctx, value, "stop"); err != nil {
+	if err = m.stopWorker(ctx, value); err != nil {
 		return err
 	}
+	unitTouched = false
 	workerLog, err := os.Open(filepath.Join(m.workDir(value), "build.log"))
 	if err != nil {
 		return err
@@ -325,7 +332,34 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	if err = log.Sync(); err != nil {
 		return err
 	}
+	if err = m.mirror.RemoveCheckout(ctx, worktree); err != nil {
+		return err
+	}
+	checkoutOwned = false
 	return m.saveAttempt(ctx, value)
+}
+
+type workerStopError struct{ cause error }
+
+func (e *workerStopError) Error() string { return e.cause.Error() }
+func (e *workerStopError) Unwrap() error { return e.cause }
+
+func (m *Manager) stopWorker(ctx context.Context, value model.Build) error {
+	stopErr := m.unitOperation(ctx, value, "stop")
+	state, inspectErr := m.unitProperty(ctx, value, "ActiveState")
+	if inspectErr != nil {
+		return &workerStopError{errors.Join(stopErr, inspectErr)}
+	}
+	if state != "inactive" && state != "failed" {
+		return &workerStopError{errors.Join(stopErr, fmt.Errorf("build service has not stopped: %s", state))}
+	}
+	for _, property := range []string{"MainPID", "ControlPID"} {
+		pid, err := m.unitProperty(ctx, value, property)
+		if err != nil || pid != "0" {
+			return &workerStopError{errors.Join(stopErr, err, fmt.Errorf("build service %s is not confirmed zero", property))}
+		}
+	}
+	return stopErr
 }
 
 func (m *Manager) prepareJob(value model.Build, loader config.Loader, worktree string) error {
@@ -383,7 +417,7 @@ func ensureWorkerTraversal(directory string, gid int) error {
 }
 
 func (m *Manager) prepareWorkerPermissions(value model.Build, job Job, gid int) error {
-	for _, directory := range []string{m.cfg.Server.DataDir, filepath.Join(m.cfg.Server.DataDir, "projects"), m.cfg.DataDir, filepath.Join(m.cfg.DataDir, "work"), filepath.Join(m.cfg.DataDir, "cache")} {
+	for _, directory := range []string{m.cfg.Server.DataDir, filepath.Join(m.cfg.Server.DataDir, "projects"), m.cfg.DataDir, filepath.Join(m.cfg.DataDir, "work"), filepath.Dir(m.workDir(value)), filepath.Join(m.cfg.DataDir, "cache")} {
 		if err := ensureWorkerTraversal(directory, gid); err != nil {
 			return err
 		}

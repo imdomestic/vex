@@ -83,6 +83,33 @@ func freshnessManager(t *testing.T) (*Manager, string, string) {
 	return manager, source, sha
 }
 
+func TestRegisteredBranchInitialSeed(t *testing.T) {
+	manager, _, _ := freshnessManager(t)
+	room, err := manager.Get(t.Context(), "main-fabric")
+	if err != nil {
+		t.Fatal(err)
+	}
+	room.Seed = ""
+	if err = manager.DB.Put(t.Context(), "room", room.ID, room); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.SyncBranches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := manager.Start(t.Context(), room.ID, nil, auth.Identity{User: "integration"})
+	if err != nil || result.Room.Generation != 1 || result.Room.SeedResolved == nil || result.Room.SeedResolved.Kind != "empty" {
+		t.Fatalf("initial branch seed: %+v %v", result.Room, err)
+	}
+	manager.Cfg.Rooms.DefaultSeed = "world:another"
+	if err = manager.SyncBranches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := manager.Get(t.Context(), room.ID)
+	if err != nil || preserved.Seed != "empty" || preserved.SeedResolved == nil || preserved.SeedResolved.Kind != "empty" {
+		t.Fatalf("active branch seed changed: %+v %v", preserved, err)
+	}
+}
+
 func TestBranchStartFetchesRealHeadAndPublishesEvent(t *testing.T) {
 	for _, internal := range []bool{false, true} {
 		name := "public start"
