@@ -5,15 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
+	"sync"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/auth"
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/kube"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/slp"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/auth"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/runtime"
+	"github.com/imdomestic/vex/controller/internal/slp"
+	"github.com/imdomestic/vex/controller/internal/store"
 )
+
+var schedulingMu sync.Mutex
 
 func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(5 * time.Second)
@@ -48,6 +53,8 @@ func (e *roomReconcileErrors) Error() string { return e.cause.Error() }
 func (e *roomReconcileErrors) Unwrap() error { return e.cause }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
+	schedulingMu.Lock()
+	defer schedulingMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
@@ -61,7 +68,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	nodes, err := m.Kube.Nodes(ctx)
+	nodes, err := m.Backend.Capacity(ctx)
 	if err != nil {
 		return err
 	}
@@ -107,8 +114,8 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			return err
 		}
 	}
-	if room.Host != room.ID+"."+m.Cfg.Minecraft.Zone {
-		room.Host = room.ID + "." + m.Cfg.Minecraft.Zone
+	if room.Host != m.host(room.ID) {
+		room.Host = m.host(room.ID)
 		if err = m.save(ctx, room, rt); err != nil {
 			return err
 		}
@@ -123,9 +130,9 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		if err = m.reconcileFailure(ctx, room, rt); err != nil {
 			return err
 		}
-		return m.Kube.SyncHost(ctx, room.ID, room.Host)
+		return m.syncHost(ctx, room, rt)
 	}
-	if err = m.Kube.SyncHost(ctx, room.ID, room.Host); err != nil {
+	if err = m.syncHost(ctx, room, rt); err != nil {
 		return err
 	}
 	if room.State == "stopped" || room.State == "closed" {
@@ -160,7 +167,7 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		rt.NodeMissingSince = nil
 	}
 	if room.State == "lost" {
-		status, err := m.Kube.ObserveRoom(ctx, room.ID)
+		status, err := m.observe(ctx, room, rt)
 		if err != nil {
 			return err
 		}
@@ -174,7 +181,7 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			rt.StartingAt = &now
 		}
 		room.LastError, room.IdleSince = nil, nil
-		rt.LastProbe, rt.PodNotReadySince, rt.LostFrom = nil, nil, ""
+		rt.LastProbe, rt.ProcessNotReadySince, rt.LostFrom = nil, nil, ""
 		if err = m.save(ctx, room, rt); err != nil {
 			return err
 		}
@@ -223,8 +230,8 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 	if b.Minecraft == nil || *b.Minecraft != m.Cfg.Minecraft.Version {
 		return m.Fail(ctx, room, rt, "build_mismatch", "构建 Minecraft 版本与服务器配置不一致")
 	}
-	if room.SeedResolved != nil && room.SeedResolved.Kind == "asset" {
-		if err = m.assetCompatible(ctx, *room.SeedResolved, b); err != nil {
+	if room.SeedResolved != nil && room.SeedResolved.Kind == "world" {
+		if err = m.worldCompatible(ctx, *room.SeedResolved, b); err != nil {
 			return m.Fail(ctx, room, rt, "build_mismatch", err.Error())
 		}
 	}
@@ -243,6 +250,10 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			return err
 		}
 		rt.Spec = &spec
+		rt.Resource, err = m.Backend.Reference(room)
+		if err != nil {
+			return err
+		}
 		rt.StartingAt = &now
 		room.Node = &node
 		room.State = "starting"
@@ -251,22 +262,24 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			return err
 		}
 	}
-	if err = m.Kube.EnsureRoom(ctx, *rt.Spec); err != nil {
-		return err
-	}
-	rt.WorldExists = true
-	status, err := m.Kube.ObserveRoom(ctx, room.ID)
+	ref, err := m.Backend.EnsureRoom(ctx, *rt.Spec)
 	if err != nil {
 		return err
 	}
-	if status.PodReady {
-		rt.PodNotReadySince = nil
+	rt.Resource = ref
+	rt.WorldExists = true
+	status, err := m.observe(ctx, room, rt)
+	if err != nil {
+		return err
+	}
+	if status.ProcessReady {
+		rt.ProcessNotReadySince = nil
 	}
 	if status.Ready && status.Generation == room.Generation && status.BuildID == room.BuildID {
 		if room.State == "ready" && !forceProbe && rt.LastProbe != nil && now.Sub(*rt.LastProbe) < 15*time.Second {
 			return m.save(ctx, room, rt)
 		}
-		probe, probeErr := slp.Probe(ctx, m.Cfg.Rooms.RouterAddress, room.Host, room.Port)
+		probe, probeErr := slp.Probe(ctx, m.Cfg.Server.RouterAddress, room.Host, room.Port)
 		rt.LastProbe = &now
 		if probeErr == nil && slp.Matches(probe, room) {
 			room.State = "ready"
@@ -285,8 +298,8 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 				idle := m.Cfg.Rooms.CommitIdle
 				if room.Kind == "branch" {
 					idle = m.Cfg.Rooms.BranchIdle
-				} else if room.Kind == "asset" {
-					idle = m.Cfg.Rooms.AssetIdle
+				} else if room.Kind == "world" {
+					idle = m.Cfg.Rooms.WorldIdle
 				}
 				if now.Sub(*room.IdleSince) >= config.Duration(idle) {
 					room.State = "stopping"
@@ -302,15 +315,15 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		return m.save(ctx, room, rt)
 	}
 	room.State, room.IdleSince = "starting", nil
-	if status.PodReady {
-		room.Phase = "verifying Pod identity"
+	if status.ProcessReady {
+		room.Phase = "verifying process identity"
 		return m.save(ctx, room, rt)
 	}
-	if rt.PodNotReadySince == nil {
-		rt.PodNotReadySince = &now
+	if rt.ProcessNotReadySince == nil {
+		rt.ProcessNotReadySince = &now
 	}
-	if now.Sub(*rt.PodNotReadySince) >= config.Duration(m.Cfg.Rooms.StartTimeout) {
-		return m.Fail(ctx, room, rt, "start_timeout", "Pod 连续未就绪超过启动期限")
+	if now.Sub(*rt.ProcessNotReadySince) >= config.Duration(m.Cfg.Rooms.StartTimeout) {
+		return m.Fail(ctx, room, rt, "start_timeout", "进程连续未就绪超过启动期限")
 	}
 	room.Phase = status.Phase
 	if room.Phase == "" {
@@ -319,7 +332,7 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 	return m.save(ctx, room, rt)
 }
 
-func lostRecoveryState(room model.Room, rt Runtime, status kube.RoomStatus) string {
+func lostRecoveryState(room model.Room, rt Runtime, status runtime.RoomStatus) string {
 	if room.Label == "finished" || rt.LostFrom == "stopping" || rt.LostFrom == "archiving" {
 		return "stopping"
 	}
@@ -334,21 +347,40 @@ func (m *Manager) chooseNode(ctx context.Context, room model.Room, nodes []model
 	if err != nil {
 		return "", err
 	}
-	used := map[string]int{}
-	for _, r := range rooms {
-		if r.ID != room.ID && r.Node != nil && r.State != "closed" && r.State != "stopped" && r.State != "lost" && r.State != "failed" {
-			used[*r.Node]++
+	used := map[string]map[string]bool{}
+	for _, node := range nodes {
+		used[node.Name] = map[string]bool{}
+		for _, id := range node.Rooms {
+			used[node.Name][id] = true
 		}
 	}
-	preference := []string{"seraph", "encore"}
-	if room.Kind == "branch" {
-		preference = []string{"encore"}
-	}
-	for _, name := range preference {
-		for _, node := range nodes {
-			if node.Name == name && node.Ready && node.Schedulable && used[name] < m.Cfg.Rooms.MaxRunning[name] {
-				return name, nil
+	activeProject := 0
+	for _, r := range rooms {
+		if r.ID != room.ID && r.Node != nil && r.State != "closed" && r.State != "stopped" && r.State != "failed" {
+			activeProject++
+			if used[*r.Node] == nil {
+				used[*r.Node] = map[string]bool{}
 			}
+			used[*r.Node][m.Cfg.ID+"/"+r.ID] = true
+		}
+	}
+	if activeProject >= m.Cfg.Quota.MaxRooms {
+		return "", nil
+	}
+	role := "ephemeral"
+	if room.Kind == "branch" {
+		role = "persistent"
+	}
+	ordered := append([]model.Node{}, nodes...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Priority != ordered[j].Priority {
+			return ordered[i].Priority > ordered[j].Priority
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	for _, node := range ordered {
+		if node.Ready && node.Schedulable && slices.Contains(node.Roles, role) && len(used[node.Name]) < node.MaxRunning {
+			return node.Name, nil
 		}
 	}
 	return "", nil
@@ -375,30 +407,22 @@ func (m *Manager) hasLease(ctx context.Context, room model.Room, now time.Time) 
 }
 
 func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime) error {
-	status, err := m.Kube.ObserveRoom(ctx, room.ID)
+	status, err := m.observe(ctx, room, rt)
 	if err != nil {
 		return err
 	}
 	if room.State == "stopping" {
-		if status.PodExists {
-			if room.Phase != "waiting for Pod exit" {
-				if status.Ready {
-					saveContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-					_, err = m.Kube.RCON(saveContext, room.ID, "save-all flush")
-					cancel()
-					if err != nil {
-						slog.Warn("room save command unavailable; continuing graceful Pod termination", "room", room.ID)
-					}
-				}
-				if err = m.Kube.ScaleRoom(ctx, room.ID, 0); err != nil {
+		if status.ProcessExists {
+			if room.Phase != "waiting for process exit" {
+				if err = m.Backend.StopRoom(ctx, rt.Resource, runtime.StopOptions{Save: true, Timeout: 120 * time.Second}); err != nil {
 					return err
 				}
-				room.Phase = "waiting for Pod exit"
+				room.Phase = "waiting for process exit"
 				return m.save(ctx, room, rt)
 			}
 			return nil
 		}
-		if !rt.WorldExists {
+		if !rt.WorldExists || rt.Spec == nil {
 			return m.finishStop(ctx, room, rt, nil)
 		}
 		now := time.Now().UTC()
@@ -419,11 +443,11 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 		if rt.Spec == nil {
 			return fmt.Errorf("room archive has no generation specification")
 		}
-		archive, archiveErr := m.Kube.Archive(ctx, kube.ArchiveSpec{Room: room, RoomToken: rt.Spec.RoomToken})
+		archive, archiveErr := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
 		if archiveErr != nil {
 			return archiveErr
 		}
-		if archive.Complete {
+		if archive.State == runtime.ArchiveComplete {
 			rt.ArchiveComplete = true
 			if err = m.save(ctx, room, rt); err != nil {
 				return err
@@ -438,15 +462,15 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 	if rt.Spec == nil {
 		return fmt.Errorf("room archive has no generation specification")
 	}
-	archive, err := m.Kube.Archive(ctx, kube.ArchiveSpec{Room: room, RoomToken: rt.Spec.RoomToken})
+	archive, err := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
 	if err != nil {
 		return err
 	}
-	if archive.WorldMissing {
+	if archive.State == runtime.ArchiveWorldMissing {
 		rt.WorldExists = false
 		return m.finishStop(ctx, room, rt, nil)
 	}
-	if archive.Failed {
+	if archive.State == runtime.ArchiveFailed {
 		room.LastError = model.Failure("archive_failed", archive.Message)
 		room.Phase = "archive failed"
 		return m.save(ctx, room, rt)
@@ -457,10 +481,10 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, snapshot *model.Snapshot) error {
 	if snapshot != nil {
 		room.LastSnapshot = &snapshot.CapturedAt
+		if err := m.Backend.DeleteRoom(ctx, rt.Resource, runtime.DeleteOptions{KeepWorld: room.Kind == "branch", Snapshot: snapshot}); err != nil {
+			return err
+		}
 		if room.Kind != "branch" {
-			if err := m.Kube.DeleteArchivedRoom(ctx, room, *snapshot); err != nil {
-				return err
-			}
 			rt.WorldExists = false
 		}
 	}
@@ -474,7 +498,7 @@ func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, s
 	room.LastError = nil
 	rt.Spec = nil
 	rt.StartingAt = nil
-	rt.PodNotReadySince, rt.NodeMissingSince, rt.LastProbe = nil, nil, nil
+	rt.ProcessNotReadySince, rt.NodeMissingSince, rt.LastProbe = nil, nil, nil
 	rt.Failure, rt.LostFrom = nil, ""
 	rt.Online = 0
 	restart := rt.Restart && room.Label == "testing"
@@ -490,25 +514,5 @@ func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, s
 }
 
 func (m *Manager) Nodes(ctx context.Context) ([]model.Node, error) {
-	nodes, err := m.Kube.Nodes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err = sampleRootSpace(nodes); err != nil {
-		return nil, err
-	}
-	rooms, err := m.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range nodes {
-		nodes[i].MaxRunning = m.Cfg.Rooms.MaxRunning[nodes[i].Name]
-		nodes[i].Rooms = []string{}
-		for _, room := range rooms {
-			if room.Node != nil && *room.Node == nodes[i].Name && room.State != "closed" {
-				nodes[i].Rooms = append(nodes[i].Rooms, room.ID)
-			}
-		}
-	}
-	return nodes, nil
+	return m.Backend.Capacity(ctx)
 }

@@ -5,30 +5,36 @@ package archive
 import (
 	"context"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
 func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
-	tank, identity, knownHosts := os.Getenv("CHORUS_IT_TANK"), os.Getenv("CHORUS_IT_IDENTITY"), os.Getenv("CHORUS_IT_KNOWN_HOSTS")
-	world := os.Getenv("CHORUS_IT_WORLD")
-	if tank == "" || identity == "" || knownHosts == "" || world == "" {
-		t.Skip("requires real tank test directory, identity, known_hosts and plaza world")
+	realArchiveQueue(t, true)
+}
+
+func TestRealLocalQueueContinuesAndRetriesIndependently(t *testing.T) {
+	realArchiveQueue(t, false)
+}
+
+func realArchiveQueue(t *testing.T, remote bool) {
+	t.Helper()
+	tank, identity, knownHosts := os.Getenv("VEX_IT_TANK"), os.Getenv("VEX_IT_IDENTITY"), os.Getenv("VEX_IT_KNOWN_HOSTS")
+	world := os.Getenv("VEX_IT_WORLD")
+	if world == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
+		t.Skip("requires a real world and credentials for the selected archive backend")
 	}
-	host, remoteRoot, err := target(tank)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(remoteRoot, "/srv/archive/chorus/it-") || strings.Contains(strings.TrimPrefix(remoteRoot, "/srv/archive/chorus/it-"), "/") {
-		t.Fatal("isolated tank test directory required")
+	if remote {
+		_, remoteRoot, err := target(tank)
+		if err != nil || !strings.HasPrefix(remoteRoot, "/srv/archive/vex/it-") || strings.Contains(strings.TrimPrefix(remoteRoot, "/srv/archive/vex/it-"), "/") {
+			t.Fatal("isolated Vex tank test directory required", err)
+		}
 	}
 	source, err := filepath.EvalSymlinks(filepath.Join(world, "level.dat"))
 	if err != nil {
@@ -42,7 +48,7 @@ func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(root, "queue.db")
-	db, err := store.Open(dbPath)
+	db, err := openArchiveDatabase(dbPath, "queue-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +57,11 @@ func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
 			db.Close()
 		}
 	}()
-	cfg := config.Config{Server: config.Server{DataDir: root}, Archive: config.Archive{Enabled: true, TankTarget: tank, IdentityFile: identity, KnownHostsFile: knownHosts, TankBWLimit: "5M"}}
-	m, err := New(cfg, db)
+	cfg := config.ProjectConfig{ID: "queue-test", DataDir: root, Archive: config.EffectiveArchive{Archive: config.Archive{Backend: "local", Local: config.LocalArchive{Directory: filepath.Join(root, "archive")}}}}
+	if remote {
+		cfg.Archive.Archive = config.Archive{Backend: "rsync-ssh", RsyncSSH: config.RsyncSSH{Target: tank, IdentityFile: identity, KnownHostsFile: knownHosts, BWLimit: "5M"}}
+	}
+	m, err := New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +74,7 @@ func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 	for _, name := range []string{"first", "second"} {
-		task := model.Transfer{ID: name, LocalPath: name + ".dat", RemotePath: name + ".dat", SHA256: digest, Size: size, Status: "queued", CreatedAt: now, UpdatedAt: now}
+		task := model.Transfer{Project: cfg.ID, ID: name, LocalPath: name + ".dat", RemotePath: "projects/" + cfg.ID + "/" + name + ".dat", SHA256: digest, Size: size, Status: "queued", CreatedAt: now, UpdatedAt: now}
 		if err = db.Put(ctx, "transfer", task.ID, task); err != nil {
 			t.Fatal(err)
 		}
@@ -83,18 +92,18 @@ func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
 	if first.Status != "failed" || first.Attempt != 1 || second.Status != "verified" || second.VerifiedAt == nil {
 		t.Fatalf("queue states: first=%s/%d second=%s", first.Status, first.Attempt, second.Status)
 	}
-	if err = m.checkRemote(ctx, host, path.Join(remoteRoot, second.RemotePath), digest, size); err != nil {
+	if err = m.Storage.Verify(ctx, second.RemotePath, digest, size); err != nil {
 		t.Fatal(err)
 	}
 	copyArchiveFile(t, source, filepath.Join(root, "first.dat"))
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err = store.Open(dbPath)
+	db, err = openArchiveDatabase(dbPath, cfg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = New(cfg, db)
+	m, err = New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +136,8 @@ func TestRealTankQueueContinuesAndRetriesIndependently(t *testing.T) {
 	if first.Status != "verified" || first.Attempt != 2 || second.Attempt != 1 {
 		t.Fatal("independent retry attempts did not match")
 	}
-	if err = m.checkRemote(ctx, host, path.Join(remoteRoot, first.RemotePath), digest, size); err != nil {
+	if err = m.Storage.Verify(ctx, first.RemotePath, digest, size); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("preserved tank files: %s/first.dat %s/second.dat; SHA-256 verified; failed transfer did not block later task; retry delay survived SQLite reopen", tank, tank)
+	t.Logf("archive backend=%s verified keys %s and %s; failed transfer did not block later task; retry delay survived SQLite reopen", cfg.Archive.Backend, first.RemotePath, second.RemotePath)
 }

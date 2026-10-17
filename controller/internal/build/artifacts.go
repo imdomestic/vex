@@ -4,11 +4,15 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,9 +21,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/magiconair/properties"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func artifactPath(worktree string, loader config.Loader) (string, error) {
@@ -32,6 +37,18 @@ func artifactPath(worktree string, loader config.Loader) (string, error) {
 	}
 	selected := []string{}
 	for _, path := range paths {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		root, err := filepath.EvalSymlinks(worktree)
+		if err != nil {
+			return "", err
+		}
+		resolvedRel, err := filepath.Rel(root, resolved)
+		if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("artifact resolves outside the worktree")
+		}
 		rel, err := filepath.Rel(worktree, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return "", fmt.Errorf("artifact escapes worktree")
@@ -66,17 +83,36 @@ func artifactPath(worktree string, loader config.Loader) (string, error) {
 }
 
 func hashFile(path string) (string, int64, error) {
+	file, err := describeFile(path, "")
+	return file.SHA256, file.Size, err
+}
+
+func describeFile(path, side string) (model.BuildFile, error) {
+	var result model.BuildFile
 	file, err := os.Open(path)
 	if err != nil {
-		return "", 0, err
+		return result, err
 	}
 	defer file.Close()
-	hash := sha256.New()
-	size, err := io.Copy(hash, file)
+	one, two, five := sha1.New(), sha256.New(), sha512.New()
+	size, err := io.Copy(io.MultiWriter(one, two, five), file)
 	if err != nil {
-		return "", 0, err
+		return result, err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), size, nil
+	return model.BuildFile{
+		Name: filepath.Base(path), Side: side, Size: size,
+		SHA1: hex.EncodeToString(one.Sum(nil)), SHA256: hex.EncodeToString(two.Sum(nil)), SHA512: hex.EncodeToString(five.Sum(nil)),
+	}, nil
+}
+
+func (m *Manager) buildFile(path string, value model.Build, side string) (model.BuildFile, error) {
+	file, err := describeFile(path, side)
+	if err != nil {
+		return file, err
+	}
+	file.Path = filepath.ToSlash(filepath.Join("builds", value.ID, fmt.Sprintf("attempt-%d", value.Attempt), file.Name))
+	file.URL = m.apiPrefix() + "/builds/" + value.ID + "/files/" + url.PathEscape(file.Name)
+	return file, nil
 }
 
 func copyFile(source, target string) error {
@@ -101,20 +137,20 @@ func copyFile(source, target string) error {
 	return closeErr
 }
 
-func (m *Manager) dependency(ctx context.Context, props *properties.Properties, dep config.Dependency) (model.BuildFile, string, error) {
+func (m *Manager) dependency(ctx context.Context, props *properties.Properties, dep config.Dependency, loader string) (model.BuildFile, string, error) {
 	var result model.BuildFile
 	if dep.Side != "both" && dep.Side != "server" && dep.Side != "client" {
 		return result, "", fmt.Errorf("invalid dependency side %q", dep.Side)
 	}
-	if _, _, err := props.Set("__chorus_dependency_url", dep.URL); err != nil {
+	if _, _, err := props.Set("__vex_dependency_url", dep.URL); err != nil {
 		return result, "", err
 	}
-	expanded, ok := props.Get("__chorus_dependency_url")
+	expanded, ok := props.Get("__vex_dependency_url")
 	if !ok || strings.Contains(expanded, "${") {
 		return result, "", fmt.Errorf("dependency URL contains an unresolved property")
 	}
 	u, err := url.Parse(expanded)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return result, "", fmt.Errorf("dependency requires a public HTTPS URL")
 	}
 	name := filepath.Base(u.Path)
@@ -125,7 +161,7 @@ func (m *Manager) dependency(ctx context.Context, props *properties.Properties, 
 		if !digestPattern.MatchString(dep.SHA256) {
 			return result, "", fmt.Errorf("invalid configured dependency SHA-256")
 		}
-		cached := filepath.Join(m.cfg.Server.DataDir, "deps", dep.SHA256+".jar")
+		cached := filepath.Join(m.cfg.DataDir, "deps", dep.SHA256+".jar")
 		if _, err = os.Stat(cached); err == nil {
 			digest, size, err := hashFile(cached)
 			if err != nil {
@@ -134,7 +170,7 @@ func (m *Manager) dependency(ctx context.Context, props *properties.Properties, 
 			if digest != dep.SHA256 {
 				return result, "", fmt.Errorf("cached dependency checksum mismatch")
 			}
-			return model.BuildFile{Name: name, SHA256: digest, Size: size, Side: dep.Side, URL: "/v1/deps/" + digest}, cached, nil
+			return model.BuildFile{Name: name, SHA256: digest, Size: size, Side: dep.Side}, cached, nil
 		} else if !os.IsNotExist(err) {
 			return result, "", err
 		}
@@ -157,7 +193,7 @@ func (m *Manager) dependency(ctx context.Context, props *properties.Properties, 
 	if response.StatusCode != http.StatusOK {
 		return result, "", fmt.Errorf("download dependency: HTTP %d", response.StatusCode)
 	}
-	staging, err := os.CreateTemp(filepath.Join(m.cfg.Server.DataDir, ".work"), "dependency-*.jar")
+	staging, err := os.CreateTemp(filepath.Join(m.cfg.DataDir, ".work"), "dependency-*.jar")
 	if err != nil {
 		return result, "", err
 	}
@@ -182,131 +218,63 @@ func (m *Manager) dependency(ctx context.Context, props *properties.Properties, 
 	if dep.SHA256 != "" && digest != dep.SHA256 {
 		return result, "", fmt.Errorf("dependency SHA-256 mismatch")
 	}
-	if _, err = JarModIDs(staging.Name()); err != nil {
+	if _, err = JarModIDs(staging.Name(), loader); err != nil {
 		return result, "", err
 	}
-	target := filepath.Join(m.cfg.Server.DataDir, "deps", digest+".jar")
+	target := filepath.Join(m.cfg.DataDir, "deps", digest+".jar")
 	if err = os.Rename(staging.Name(), target); err != nil {
 		return result, "", err
 	}
-	return model.BuildFile{Name: name, SHA256: digest, Size: size, Side: dep.Side, URL: "/v1/deps/" + digest}, target, nil
+	return model.BuildFile{Name: name, SHA256: digest, Size: size, Side: dep.Side}, target, nil
 }
 
-func (m *Manager) hopArtifact(minecraft string) (*model.BuildFile, string, error) {
-	if filepath.Base(minecraft) != minecraft || minecraft == "." || minecraft == ".." {
-		return nil, "", fmt.Errorf("invalid Minecraft version path")
-	}
-	directory := filepath.Join(m.cfg.Server.DataDir, "mods", "chorus-hop", minecraft)
-	entries, err := os.ReadDir(directory)
-	if os.IsNotExist(err) {
+func (m *Manager) agentArtifact(value model.Build) (*model.BuildFile, string, error) {
+	loader := m.cfg.Loaders[value.Loader]
+	if loader.Agent == "" {
 		return nil, "", nil
 	}
+	agent, ok := m.cfg.Agents[loader.Agent]
+	if !ok || value.Minecraft == nil || agent.Minecraft != *value.Minecraft || agent.Loader != value.Loader {
+		return nil, "", fmt.Errorf("configured agent does not match this build")
+	}
+	info, err := os.Lstat(agent.File)
 	if err != nil {
 		return nil, "", err
 	}
-	var selected string
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".jar" {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, "", err
-		}
-		if !info.Mode().IsRegular() {
-			return nil, "", fmt.Errorf("hop artifact must be a regular jar")
-		}
-		if selected != "" {
-			return nil, "", fmt.Errorf("Minecraft version requires exactly one configured hop artifact")
-		}
-		selected = filepath.Join(directory, entry.Name())
+	if !info.Mode().IsRegular() || filepath.Ext(agent.File) != ".jar" {
+		return nil, "", fmt.Errorf("configured agent must be a regular jar")
 	}
-	if selected == "" {
-		return nil, "", fmt.Errorf("configured hop artifact directory contains no jar")
-	}
-	ids, err := JarModIDs(selected)
+	ids, err := JarModIDs(agent.File, value.Loader)
 	if err != nil {
 		return nil, "", err
 	}
 	found := false
 	for _, id := range ids {
-		if id == "chorus-hop" {
+		if id == "vex_agent" {
 			found = true
 		}
 	}
 	if !found {
-		return nil, "", fmt.Errorf("hop artifact does not contain chorus-hop")
+		return nil, "", fmt.Errorf("agent artifact does not contain vex_agent")
 	}
-	digest, size, err := hashFile(selected)
+	file, err := m.buildFile(agent.File, value, "server")
 	if err != nil {
 		return nil, "", err
 	}
-	published := filepath.Join(directory, "published", digest+".jar")
-	if err = publishHop(selected, published, digest, size); err != nil {
-		return nil, "", err
-	}
-	return &model.BuildFile{Name: filepath.Base(selected), SHA256: digest, Size: size, Side: "server", URL: "/v1/mods/chorus-hop/" + url.PathEscape(minecraft) + "/" + digest + ".jar"}, published, nil
+	return &file, agent.File, nil
 }
 
-func publishHop(source, target, expectedDigest string, expectedSize int64) error {
-	info, err := os.Lstat(target)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("published hop artifact must be a regular jar")
-		}
-		digest, size, err := hashFile(target)
-		if err != nil {
-			return err
-		}
-		if digest != expectedDigest || size != expectedSize {
-			return fmt.Errorf("published hop artifact checksum mismatch")
-		}
-		return nil
+func JarModIDs(path, loader string) ([]string, error) {
+	if loader != "fabric" && loader != "neoforge" {
+		return nil, fmt.Errorf("unsupported JAR metadata loader")
 	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil {
-		return err
-	}
-	staging, err := os.MkdirTemp(filepath.Dir(target), ".publishing-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(staging)
-	path := filepath.Join(staging, "artifact.jar")
-	if err = copyFile(source, path); err != nil {
-		return err
-	}
-	digest, size, err := hashFile(path)
-	if err != nil {
-		return err
-	}
-	if digest != expectedDigest || size != expectedSize {
-		return fmt.Errorf("configured hop artifact changed during publication")
-	}
-	if err = os.Chmod(path, 0440); err != nil {
-		return err
-	}
-	if err = os.Link(path, target); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(target))
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
-}
-
-func JarModIDs(path string) ([]string, error) {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 	ids := map[string]bool{}
-	if err = collectModIDs(&reader.Reader, ids, 0); err != nil {
+	if err = collectModIDs(&reader.Reader, loader, ids, 0, true); err != nil {
 		return nil, err
 	}
 	result := make([]string, 0, len(ids))
@@ -317,31 +285,91 @@ func JarModIDs(path string) ([]string, error) {
 	return result, nil
 }
 
-func collectModIDs(reader *zip.Reader, ids map[string]bool, depth int) error {
+func collectModIDs(reader *zip.Reader, loader string, ids map[string]bool, depth int, required bool) error {
 	if depth > 8 {
 		return fmt.Errorf("nested jar depth exceeds eight")
 	}
-	metadata, err := reader.Open("fabric.mod.json")
-	if err != nil {
-		return fmt.Errorf("read Fabric metadata: %w", err)
+	var nested []string
+	if loader == "fabric" {
+		data, found, err := jarMetadata(reader, "fabric.mod.json")
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("Fabric JAR requires fabric.mod.json")
+		}
+		var mod struct {
+			ID   string `json:"id"`
+			Jars []struct {
+				File string `json:"file"`
+			} `json:"jars"`
+		}
+		if err = json.Unmarshal(data, &mod); err != nil {
+			return err
+		}
+		if mod.ID == "" {
+			return fmt.Errorf("Fabric metadata requires a mod ID")
+		}
+		ids[mod.ID] = true
+		for _, entry := range mod.Jars {
+			nested = append(nested, entry.File)
+		}
+	} else {
+		data, found, err := jarMetadata(reader, "META-INF/neoforge.mods.toml")
+		if err != nil {
+			return err
+		}
+		if !found {
+			data, found, err = jarMetadata(reader, "META-INF/mods.toml")
+			if err != nil {
+				return err
+			}
+		}
+		if !found && required {
+			return fmt.Errorf("NeoForge JAR requires mod metadata TOML")
+		}
+		if found {
+			var metadata struct {
+				Mods []struct {
+					ID string `toml:"modId"`
+				} `toml:"mods"`
+			}
+			if err = toml.Unmarshal(data, &metadata); err != nil {
+				return err
+			}
+			if len(metadata.Mods) == 0 {
+				return fmt.Errorf("NeoForge metadata requires at least one mod")
+			}
+			for _, mod := range metadata.Mods {
+				if mod.ID == "" {
+					return fmt.Errorf("NeoForge metadata requires modId")
+				}
+				ids[mod.ID] = true
+			}
+		}
+		data, found, err = jarMetadata(reader, "META-INF/jarjar/metadata.json")
+		if err != nil {
+			return err
+		}
+		if found {
+			var metadata struct {
+				Jars []struct {
+					Path string `json:"path"`
+				} `json:"jars"`
+			}
+			if err = json.Unmarshal(data, &metadata); err != nil {
+				return err
+			}
+			for _, entry := range metadata.Jars {
+				nested = append(nested, entry.Path)
+			}
+		}
 	}
-	var mod struct {
-		ID   string `json:"id"`
-		Jars []struct {
-			File string `json:"file"`
-		} `json:"jars"`
-	}
-	err = json.NewDecoder(io.LimitReader(metadata, 1024*1024)).Decode(&mod)
-	metadata.Close()
-	if err != nil {
-		return err
-	}
-	if mod.ID == "" {
-		return fmt.Errorf("Fabric metadata requires a mod ID")
-	}
-	ids[mod.ID] = true
-	for _, nested := range mod.Jars {
-		file, err := reader.Open(nested.File)
+	for _, name := range nested {
+		if !fs.ValidPath(name) || strings.Contains(name, "\\") || !strings.HasSuffix(name, ".jar") {
+			return fmt.Errorf("invalid nested JAR path")
+		}
+		file, err := reader.Open(name)
 		if err != nil {
 			return err
 		}
@@ -357,9 +385,27 @@ func collectModIDs(reader *zip.Reader, ids map[string]bool, depth int) error {
 		if err != nil {
 			return err
 		}
-		if err = collectModIDs(nestedReader, ids, depth+1); err != nil {
+		if err = collectModIDs(nestedReader, loader, ids, depth+1, loader == "fabric"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func jarMetadata(reader *zip.Reader, name string) ([]byte, bool, error) {
+	file, err := reader.Open(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, 1024*1024+1))
+	if err = errors.Join(readErr, file.Close()); err != nil {
+		return nil, false, err
+	}
+	if len(data) > 1024*1024 {
+		return nil, false, fmt.Errorf("JAR metadata exceeds 1 MiB")
+	}
+	return data, true, nil
 }

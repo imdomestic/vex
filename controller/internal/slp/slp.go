@@ -11,7 +11,7 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	mcnet "github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 type Status struct {
@@ -68,7 +68,7 @@ func Probe(ctx context.Context, address, host string, port int) (Status, error) 
 
 func Matches(status Status, room model.Room) bool {
 	fields := strings.Fields(status.Description.ClearString())
-	expected := map[string]string{"room": room.ID, "build": room.BuildID, "generation": fmt.Sprint(room.Generation)}
+	expected := map[string]string{"project": room.Project, "room": room.ID, "build": room.BuildID, "generation": fmt.Sprint(room.Generation)}
 	seen := map[string]bool{}
 	for _, field := range fields {
 		key, value, ok := strings.Cut(field, "=")
@@ -79,7 +79,7 @@ func Matches(status Status, room model.Room) bool {
 			seen[key] = true
 		}
 	}
-	return len(seen) == 3
+	return len(seen) == len(expected)
 }
 
 func (s Status) Sample() []model.Player {

@@ -6,18 +6,18 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-var assetPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,15}$`)
 var slugPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
 func ValidSHA(sha string) bool          { return shaPattern.MatchString(sha) }
-func ValidAsset(id string) bool         { return assetPattern.MatchString(id) }
+func ValidWorld(id string) bool         { return config.ValidID(id) }
 func BuildID(sha, loader string) string { return loader + "-" + sha[:12] }
 
-func BranchID(branch, loader string, collision bool) string {
+func BranchID(project, branch, loader string, collision bool) string {
 	slug := strings.Trim(slugPattern.ReplaceAllString(strings.ToLower(branch), "-"), "-")
 	hash := sha256.Sum256([]byte(branch))
 	suffix := "-" + hex.EncodeToString(hash[:2])
@@ -25,7 +25,7 @@ func BranchID(branch, loader string, collision bool) string {
 		slug = "branch"
 		collision = true
 	}
-	max := 40 - len(loader) - 1
+	max := 63 - len(project) - 2 - len(loader) - 1
 	if collision || len(slug) > max {
 		if len(slug) > max-len(suffix) {
 			slug = strings.TrimRight(slug[:max-len(suffix)], "-")
@@ -35,20 +35,20 @@ func BranchID(branch, loader string, collision bool) string {
 	return slug + "-" + loader
 }
 
-func RoomID(kind, sha, loader, asset string) (string, error) {
-	if !ValidSHA(sha) || loader != "fabric" {
+func RoomID(kind, sha, loader, world string) (string, error) {
+	if !ValidSHA(sha) || !config.ValidID(loader) {
 		return "", model.Failure("invalid_request", "完整提交 SHA 或 loader 无效")
 	}
 	switch kind {
 	case "commit":
 		return "c" + sha[:8] + "-" + loader, nil
-	case "asset":
-		if !ValidAsset(asset) {
-			return "", model.Failure("invalid_request", "资产 ID 无效")
+	case "world":
+		if !ValidWorld(world) {
+			return "", model.Failure("invalid_request", "世界 ID 无效")
 		}
-		return "a-" + asset + "-" + sha[:8] + "-" + loader, nil
+		return "w-" + world + "-" + sha[:8] + "-" + loader, nil
 	default:
-		return "", model.Failure("invalid_request", "房间种类必须为 commit 或 asset")
+		return "", model.Failure("invalid_request", "房间种类必须为 commit 或 world")
 	}
 }
 

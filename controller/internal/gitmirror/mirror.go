@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -24,17 +24,41 @@ type Ref struct {
 }
 
 type Mirror struct {
-	remote    string
-	dir       string
-	mu        contextMutex
-	refreshMu contextMutex
+	remote      string
+	dir         string
+	credentials Credentials
+	mu          contextMutex
+	refreshMu   contextMutex
 }
 
 func New(remote, mirrorDir string) (*Mirror, error) {
+	return NewWithCredentials(remote, mirrorDir, Credentials{})
+}
+
+type Credentials struct {
+	SSHIdentityFile string
+	KnownHostsFile  string
+	HTTPSTokenFile  string
+	HTTPSUsername   string
+	HelperBinary    string
+}
+
+func NewWithCredentials(remote, mirrorDir string, credentials Credentials) (*Mirror, error) {
 	if remote == "" || !filepath.IsAbs(mirrorDir) {
 		return nil, fmt.Errorf("git remote and absolute mirror directory are required")
 	}
-	return &Mirror{remote: remote, dir: filepath.Clean(mirrorDir), mu: newContextMutex(), refreshMu: newContextMutex()}, nil
+	if credentials.SSHIdentityFile != "" && (credentials.KnownHostsFile == "" || credentials.HTTPSTokenFile != "") {
+		return nil, fmt.Errorf("SSH credentials require known_hosts and exclude HTTPS credentials")
+	}
+	for _, path := range []string{credentials.SSHIdentityFile, credentials.KnownHostsFile, credentials.HTTPSTokenFile, credentials.HelperBinary} {
+		if path != "" && !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("git credential paths must be absolute")
+		}
+	}
+	if credentials.HTTPSTokenFile != "" && credentials.HelperBinary == "" {
+		return nil, fmt.Errorf("HTTPS credentials require the vexd credential helper")
+	}
+	return &Mirror{remote: remote, dir: filepath.Clean(mirrorDir), credentials: credentials, mu: newContextMutex(), refreshMu: newContextMutex()}, nil
 }
 
 func (m *Mirror) Initialize(ctx context.Context) error {
@@ -55,10 +79,10 @@ func (m *Mirror) Initialize(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(stage)
-	if _, err = command(ctx, "", "init", "--bare", "--", stage); err != nil {
+	if _, err = m.command(ctx, "", "init", "--bare", "--", stage); err != nil {
 		return err
 	}
-	if _, err = command(ctx, "", "--git-dir="+stage, "remote", "add", "--mirror=fetch", "origin", m.remote); err != nil {
+	if _, err = m.command(ctx, "", "--git-dir="+stage, "remote", "add", "--mirror=fetch", "origin", m.remote); err != nil {
 		return err
 	}
 	return os.Rename(stage, m.dir)
@@ -106,7 +130,7 @@ func (m *Mirror) Refresh(ctx context.Context) error {
 			return err
 		}
 		defer os.RemoveAll(stage)
-		if _, err = command(ctx, "", "clone", "--mirror", "--", m.remote, stage); err != nil {
+		if _, err = m.command(ctx, "", "clone", "--mirror", "--", m.remote, stage); err != nil {
 			return err
 		}
 		return os.Rename(stage, m.dir)
@@ -303,7 +327,10 @@ func (m *Mirror) Checkout(ctx context.Context, sha, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0750); err != nil {
 		return err
 	}
-	_, err := m.git(ctx, "worktree", "add", "--detach", "--", destination, sha)
+	if _, err := command(ctx, "", "clone", "--no-hardlinks", "--no-checkout", "--", m.dir, destination); err != nil {
+		return err
+	}
+	_, err := command(ctx, destination, "checkout", "--detach", sha)
 	return err
 }
 
@@ -323,25 +350,64 @@ func (m *Mirror) RemoveCheckout(ctx context.Context, destination string) error {
 	if err != nil {
 		return err
 	}
-	expected, err := filepath.EvalSymlinks(m.dir)
+	expected, err := filepath.EvalSymlinks(filepath.Join(destination, ".git"))
 	if err != nil {
 		return err
 	}
 	if actual != expected {
-		return fmt.Errorf("worktree belongs to a different repository")
+		return fmt.Errorf("checkout must have independent Git metadata")
 	}
-	_, err = m.git(ctx, "worktree", "remove", "--force", "--", destination)
-	return err
+	origin, err := command(ctx, destination, "remote", "get-url", "origin")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(origin) != m.dir {
+		return fmt.Errorf("checkout belongs to a different repository")
+	}
+	return os.RemoveAll(destination)
 }
 
 func (m *Mirror) git(ctx context.Context, args ...string) (string, error) {
-	return command(ctx, "", append([]string{"--git-dir=" + m.dir}, args...)...)
+	return m.command(ctx, "", append([]string{"--git-dir=" + m.dir}, args...)...)
 }
 
 func command(ctx context.Context, directory string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
+	return (&Mirror{}).command(ctx, directory, args...)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func cleanEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_") || key == "SSH_AUTH_SOCK" || key == "SSH_ASKPASS" || key == "SSH_ASKPASS_REQUIRE" {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+}
+
+func (m *Mirror) command(ctx context.Context, directory string, args ...string) (string, error) {
+	settings := []string{"-c", "core.hooksPath=/dev/null", "-c", "credential.helper="}
+	credentials := m.credentials
+	if credentials.HTTPSTokenFile != "" {
+		helper := "!" + shellQuote(credentials.HelperBinary) + " git-credential --token-file " + shellQuote(credentials.HTTPSTokenFile) + " --username " + shellQuote(credentials.HTTPSUsername)
+		settings = append(settings, "-c", "credential.helper="+helper)
+	}
+	command := exec.CommandContext(ctx, "git", append(settings, args...)...)
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.Env = cleanEnvironment()
+	ssh := "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+	if credentials.SSHIdentityFile != "" {
+		ssh += " -i " + shellQuote(credentials.SSHIdentityFile) + " -o UserKnownHostsFile=" + shellQuote(credentials.KnownHostsFile)
+	} else {
+		ssh += " -o IdentityFile=none -o UserKnownHostsFile=/dev/null"
+	}
+	command.Env = append(command.Env, "GIT_SSH_COMMAND="+ssh)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-c", "user.name=Chorus Integration", "-c", "user.email=chorus@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
+	command := exec.Command("git", append([]string{"-c", "user.name=Vex Integration", "-c", "user.email=vex@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 	command.Dir = dir
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -115,7 +115,7 @@ func TestMirrorRealHistoryCheckoutAndPrune(t *testing.T) {
 	if first[0].SHA != merged || len(first[0].Parents) != 2 || first[0].Parents[0] != main || first[0].Parents[1] != feature {
 		t.Fatalf("merge history lost: %+v", first[0])
 	}
-	if first[0].Subject != "合并属性分支" || first[0].Author != "Chorus Integration" || strings.Join(first[0].Refs, ",") != "main,v-test" {
+	if first[0].Subject != "合并属性分支" || first[0].Author != "Vex Integration" || strings.Join(first[0].Refs, ",") != "main,v-test" {
 		t.Fatalf("commit metadata: %+v", first[0])
 	}
 	second, err := mirror.Commits(ctx, "main", first[1].SHA, 2)

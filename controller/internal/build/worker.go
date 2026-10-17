@@ -5,48 +5,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
-	"syscall"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/gitmirror"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/magiconair/properties"
 	"golang.org/x/sys/unix"
 )
 
-func Worker(ctx context.Context, cfg config.Config, db *store.Store, mirror *gitmirror.Mirror, id string) error {
-	m, err := New(cfg, db, mirror)
-	if err != nil {
-		return err
+var buildSlot = make(chan struct{}, 1)
+
+func (m *Manager) Process(ctx context.Context, id string) error {
+	select {
+	case buildSlot <- struct{}{}:
+		defer func() { <-buildSlot }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if !filepath.IsAbs(cfg.Build.LockFile) {
-		return fmt.Errorf("build lock_file must be absolute")
-	}
-	lock, err := os.Open(cfg.Build.LockFile)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err = acquireLock(ctx, lock); err != nil {
-		return err
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 	value, err := m.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if value.Status != "queued" {
-		return model.Failure("conflict", "build is not queued")
+	if value.Status != "queued" && value.Status != "building" {
+		return nil
 	}
-	timeout, err := time.ParseDuration(cfg.Build.Timeout)
+	if m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host" {
+		return m.fail(ctx, value, model.Failure("sandbox_unavailable", "host builds require a trusted project"))
+	}
+	timeout, err := time.ParseDuration(m.cfg.Build.Timeout)
 	if err != nil || timeout <= 0 {
 		return fmt.Errorf("build timeout must be positive")
 	}
@@ -56,6 +50,9 @@ func Worker(ctx context.Context, cfg config.Config, db *store.Store, mirror *git
 	if err != nil {
 		writeCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer done()
+		if value.Status == "building" {
+			err = errors.Join(err, m.unitOperation(writeCtx, value, "stop"))
+		}
 		if writeErr := m.fail(writeCtx, value, err); writeErr != nil {
 			return errors.Join(err, writeErr)
 		}
@@ -83,8 +80,10 @@ func acquireLock(ctx context.Context, file *os.File) error {
 }
 
 func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr error) {
-	if err := worldarchive.Space(m.cfg.Server.DataDir); err != nil {
-		return err
+	if value.Status == "queued" {
+		if err := worldarchive.Space(m.cfg.DataDir); err != nil {
+			return err
+		}
 	}
 	loader, exists := m.cfg.Loaders[value.Loader]
 	if !exists || !loader.Enabled {
@@ -93,14 +92,17 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	if !filepath.IsAbs(m.cfg.Build.JDKHome) {
 		return fmt.Errorf("build jdk_home must be absolute")
 	}
-	now := time.Now().UTC()
-	value.Status, value.StartedAt = "building", &now
+	resume := value.Status == "building"
+	if !resume {
+		now := time.Now().UTC()
+		value.Status, value.StartedAt = "building", &now
+	}
 	if err := m.db.Update(ctx, func(tx *store.Tx) error {
 		var current model.Build
 		if err := tx.Get(ctx, "build", value.ID, &current); err != nil {
 			return err
 		}
-		if current.Attempt != value.Attempt || current.Status != "queued" {
+		if current.Attempt != value.Attempt || (current.Status != "queued" && current.Status != "building") {
 			return model.Failure("conflict", "build attempt has changed")
 		}
 		return tx.Put(ctx, "build", value.ID, value)
@@ -139,13 +141,36 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 			resultErr = err
 		}
 	}()
-	worktree := filepath.Join(m.cfg.Server.DataDir, "worktrees", fmt.Sprintf("%s-%d", value.ID, value.Attempt))
-	if err = m.mirror.Checkout(ctx, value.SHA, worktree); err != nil {
-		return err
+	worktree := filepath.Join(m.workDir(value), "source")
+	if !resume {
+		if err = m.mirror.Checkout(ctx, value.SHA, worktree); err != nil {
+			return err
+		}
 	}
+	unitTouched := resume
+	workerLogCopied := false
 	defer func() {
 		cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer done()
+		if unitTouched {
+			if err := m.unitOperation(cleanupCtx, value, "stop"); err != nil {
+				resultErr = errors.Join(resultErr, err)
+				active, inspectErr := m.unitActive(cleanupCtx, value)
+				if inspectErr != nil || active {
+					resultErr = errors.Join(resultErr, inspectErr)
+					return
+				}
+			}
+			if !workerLogCopied {
+				workerLog, err := os.Open(filepath.Join(m.workDir(value), "build.log"))
+				if err == nil {
+					_, copyErr := io.Copy(log, workerLog)
+					resultErr = errors.Join(resultErr, copyErr, workerLog.Close())
+				} else if !errors.Is(err, os.ErrNotExist) {
+					resultErr = errors.Join(resultErr, err)
+				}
+			}
+		}
 		if err := m.mirror.RemoveCheckout(cleanupCtx, worktree); err != nil {
 			resultErr = errors.Join(resultErr, err)
 		}
@@ -177,40 +202,32 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	if err = m.saveAttempt(ctx, value); err != nil {
 		return err
 	}
-	temp, err := os.MkdirTemp(filepath.Join(m.cfg.Server.DataDir, ".work"), value.ID+"-")
+	if !resume {
+		if err = m.prepareJob(value, loader, worktree); err != nil {
+			return err
+		}
+	} else {
+		job, err := readJob(m.jobPath(value))
+		if err != nil || job.Attempt != value.Attempt || job.Project != m.cfg.ID || job.BuildID != value.ID {
+			return fmt.Errorf("interrupted build has no matching worker job")
+		}
+	}
+	unitTouched = true
+	if err = m.launch(ctx, value, resume); err != nil {
+		return err
+	}
+	if err = m.unitOperation(ctx, value, "stop"); err != nil {
+		return err
+	}
+	workerLog, err := os.Open(filepath.Join(m.workDir(value), "build.log"))
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := os.RemoveAll(temp); err != nil {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	args := []string{"./gradlew", loader.GradleTask}
-	args = append(args, m.cfg.Build.GradleArgs...)
-	args = append(args, "--console=plain", "--no-daemon", "--max-workers=2",
-		"-Dorg.gradle.jvmargs=-Xmx1536m -XX:ActiveProcessorCount=2 -Djava.io.tmpdir="+temp,
-		"-Porg.gradle.java.installations.paths="+m.cfg.Build.JDKHome,
-		"-Porg.gradle.java.installations.auto-download=false")
-	command := exec.CommandContext(ctx, "bash", args...)
-	command.Dir = worktree
-	command.Env = append(os.Environ(),
-		"JAVA_HOME="+m.cfg.Build.JDKHome,
-		"PATH="+filepath.Join(m.cfg.Build.JDKHome, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"TMPDIR="+temp, "GRADLE_USER_HOME="+filepath.Join(m.cfg.Server.DataDir, "gradle-home"),
-		"JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 -Djava.io.tmpdir="+temp)
-	command.Stdout, command.Stderr = log, log
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error {
-		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
+	_, copyErr := io.Copy(log, workerLog)
+	if err = errors.Join(copyErr, workerLog.Close()); err != nil {
 		return err
 	}
-	if err = command.Run(); err != nil {
-		return fmt.Errorf("Gradle failed: %w", err)
-	}
+	workerLogCopied = true
 	artifact, err := artifactPath(worktree, loader)
 	if err != nil {
 		return err
@@ -222,12 +239,12 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	if err = copyFile(artifact, filepath.Join(outputDir, artifactName)); err != nil {
 		return err
 	}
-	digest, size, err := hashFile(filepath.Join(outputDir, artifactName))
+	entry, err := m.buildFile(filepath.Join(outputDir, artifactName), value, "both")
 	if err != nil {
 		return err
 	}
-	value.Files = []model.BuildFile{{Name: artifactName, SHA256: digest, Size: size, Side: "both", URL: "/v1/builds/" + value.ID + "/files/" + artifactName}}
-	ids, err := JarModIDs(artifact)
+	value.Files = []model.BuildFile{entry}
+	ids, err := JarModIDs(artifact, value.Loader)
 	if err != nil {
 		return err
 	}
@@ -237,16 +254,23 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 	}
 	names := map[string]bool{artifactName: true}
 	for _, dep := range loader.Deps {
-		entry, path, err := m.dependency(ctx, props, dep)
+		dependency, path, err := m.dependency(ctx, props, dep, value.Loader)
 		if err != nil {
 			return err
 		}
-		if names[entry.Name] {
-			return fmt.Errorf("duplicate manifest filename %s", entry.Name)
+		if names[dependency.Name] {
+			return fmt.Errorf("duplicate manifest filename %s", dependency.Name)
 		}
-		names[entry.Name] = true
+		names[dependency.Name] = true
+		if err = copyFile(path, filepath.Join(outputDir, dependency.Name)); err != nil {
+			return err
+		}
+		entry, err := m.buildFile(filepath.Join(outputDir, dependency.Name), value, dependency.Side)
+		if err != nil {
+			return err
+		}
 		value.Files = append(value.Files, entry)
-		ids, err := JarModIDs(path)
+		ids, err := JarModIDs(path, value.Loader)
 		if err != nil {
 			return err
 		}
@@ -254,20 +278,27 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 			uniqueIDs[id] = true
 		}
 	}
-	if value.Loader == "fabric" {
-		hop, source, err := m.hopArtifact(*value.Minecraft)
+	if loader.Agent != "" {
+		agent, source, err := m.agentArtifact(value)
 		if err != nil {
 			return err
 		}
-		if hop != nil {
-			if names[hop.Name] {
-				return fmt.Errorf("duplicate manifest filename %s", hop.Name)
+		if agent != nil {
+			if names[agent.Name] {
+				return fmt.Errorf("duplicate manifest filename %s", agent.Name)
 			}
-			if err = copyFile(source, filepath.Join(outputDir, hop.Name)); err != nil {
+			if err = copyFile(source, filepath.Join(outputDir, agent.Name)); err != nil {
 				return err
 			}
-			value.Files = append(value.Files, *hop)
-			ids, err := JarModIDs(source)
+			copied, err := m.buildFile(filepath.Join(outputDir, agent.Name), value, "server")
+			if err != nil {
+				return err
+			}
+			if copied.SHA256 != agent.SHA256 || copied.Size != agent.Size {
+				return fmt.Errorf("agent artifact changed during publication")
+			}
+			value.Files = append(value.Files, copied)
+			ids, err := JarModIDs(source, value.Loader)
 			if err != nil {
 				return err
 			}
@@ -295,6 +326,106 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 		return err
 	}
 	return m.saveAttempt(ctx, value)
+}
+
+func (m *Manager) prepareJob(value model.Build, loader config.Loader, worktree string) error {
+	job := Job{
+		Version: 1, Project: m.cfg.ID, BuildID: value.ID, Attempt: value.Attempt,
+		Worktree: worktree, TempDir: filepath.Join(m.workDir(value), ".work"),
+		GradleHome: filepath.Join(m.cfg.DataDir, "cache", "gradle"), JDKHome: m.cfg.Build.JDKHome,
+		Task: loader.GradleTask, GradleArgs: m.cfg.Build.GradleArgs, Timeout: m.cfg.Build.Timeout,
+		LockFile: m.cfg.Build.LockFile,
+	}
+	if err := job.validate(m.jobPath(value)); err != nil {
+		return err
+	}
+	for _, directory := range []string{job.TempDir, job.GradleHome, filepath.Dir(m.jobPath(value))} {
+		if err := os.MkdirAll(directory, 0750); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(m.workDir(value), "build.log"), nil, 0660); err != nil {
+		return err
+	}
+	data, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(m.jobPath(value), data, 0640); err != nil {
+		return err
+	}
+	group, err := user.LookupGroup("vex-build")
+	if err != nil {
+		return fmt.Errorf("vex-build group is required: %w", err)
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return err
+	}
+	return m.prepareWorkerPermissions(value, job, gid)
+}
+
+func ensureWorkerTraversal(directory string, gid int) error {
+	var info unix.Stat_t
+	if err := unix.Lstat(directory, &info); err != nil {
+		return err
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fmt.Errorf("worker parent must be a directory: %s", directory)
+	}
+	if info.Mode&0001 != 0 || (int(info.Gid) == gid && info.Mode&0010 != 0) {
+		return nil
+	}
+	if info.Uid == 0 || int(info.Uid) != os.Geteuid() {
+		return fmt.Errorf("directory must allow vex-build traversal: %s", directory)
+	}
+	return os.Chmod(directory, os.FileMode(info.Mode&0777)|0011)
+}
+
+func (m *Manager) prepareWorkerPermissions(value model.Build, job Job, gid int) error {
+	for _, directory := range []string{m.cfg.Server.DataDir, filepath.Join(m.cfg.Server.DataDir, "projects"), m.cfg.DataDir, filepath.Join(m.cfg.DataDir, "work"), filepath.Join(m.cfg.DataDir, "cache")} {
+		if err := ensureWorkerTraversal(directory, gid); err != nil {
+			return err
+		}
+	}
+	for _, path := range []string{filepath.Dir(m.jobPath(value)), m.jobPath(value), job.GradleHome} {
+		if err := os.Chown(path, -1, gid); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(filepath.Dir(m.jobPath(value)), 0750); err != nil {
+		return err
+	}
+	if err := os.Chmod(m.jobPath(value), 0640); err != nil {
+		return err
+	}
+	if err := os.Chmod(job.GradleHome, 0770); err != nil {
+		return err
+	}
+	return filepath.WalkDir(m.workDir(value), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Lchown(path, -1, gid); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := os.FileMode(0660)
+		if entry.IsDir() {
+			mode = 0770
+		} else {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode()&0111 != 0 {
+				mode |= 0110
+			}
+		}
+		return os.Chmod(path, mode)
+	})
 }
 
 func (m *Manager) saveAttempt(ctx context.Context, value model.Build) error {

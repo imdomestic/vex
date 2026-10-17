@@ -10,9 +10,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
 func (m *Manager) RequestSnapshotRestore(ctx context.Context, id string) (model.Snapshot, bool, error) {
@@ -30,10 +30,7 @@ func (m *Manager) RequestSnapshotRestore(ctx context.Context, id string) (model.
 			return nil
 		}
 		if snapshot.TankVerifiedAt == nil {
-			return model.Failure("archive_failed", "快照没有已校验的 tank 来源")
-		}
-		if !m.cfg.Archive.Enabled {
-			return model.Failure("archive_failed", "生产 tank 身份尚未配置，恢复暂不可用")
+			return model.Failure("archive_failed", "快照没有已校验的归档来源")
 		}
 		attempt := 1
 		if snapshot.Restore != nil {
@@ -57,7 +54,10 @@ func (m *Manager) OpenSnapshot(ctx context.Context, id string) (*os.File, error)
 			return &model.Error{Code: "archive_failed", Message: "快照尚未恢复到本地", Details: &model.ErrorDetails{SnapshotID: id}}
 		}
 		var err error
-		file, err = os.Open(filepath.Join(m.cfg.Server.DataDir, "snapshots", snapshot.RoomID, snapshot.ID+".tar.gz"))
+		if !safeRelative(snapshot.Path) {
+			return fmt.Errorf("snapshot relative path is invalid")
+		}
+		file, err = os.Open(filepath.Join(m.cfg.DataDir, filepath.FromSlash(snapshot.Path)))
 		return err
 	})
 	if err != nil && file != nil {
@@ -116,22 +116,17 @@ func (m *Manager) Download(ctx context.Context, remotePath, localPath, digest st
 	if !safeRelative(remotePath) || !safeRelative(localPath) {
 		return fmt.Errorf("restore paths must be relative")
 	}
-	host, root, err := target(m.cfg.Archive.TankTarget)
-	if err != nil {
+	if err := m.Storage.Verify(ctx, remotePath, digest, size); err != nil {
 		return err
 	}
-	remote := path.Join(root, remotePath)
-	if err = m.checkRemote(ctx, host, remote, digest, size); err != nil {
+	if err := worldarchive.Space(m.cfg.DataDir); err != nil {
 		return err
 	}
-	if err = worldarchive.Space(m.cfg.Server.DataDir); err != nil {
+	local := filepath.Join(m.cfg.DataDir, filepath.FromSlash(localPath))
+	if err := os.MkdirAll(filepath.Dir(local), 0700); err != nil {
 		return err
 	}
-	local := filepath.Join(m.cfg.Server.DataDir, filepath.FromSlash(localPath))
-	if err = os.MkdirAll(filepath.Dir(local), 0700); err != nil {
-		return err
-	}
-	if err = m.rsync(ctx, host+":"+remote, local); err != nil {
+	if err := m.Storage.Get(ctx, remotePath, local); err != nil {
 		return err
 	}
 	actual, actualSize, err := worldarchive.Digest(local)
@@ -145,16 +140,19 @@ func (m *Manager) Download(ctx context.Context, remotePath, localPath, digest st
 }
 
 func (m *Manager) restoreSnapshotFile(ctx context.Context, snapshot model.Snapshot) error {
-	relative := path.Join("snapshots", snapshot.RoomID, snapshot.ID+".tar.gz")
+	relative := snapshot.Path
+	if !safeRelative(relative) {
+		return fmt.Errorf("snapshot relative path is invalid")
+	}
 	partial := path.Join(".work", "restore", snapshot.ID+".tar.gz.partial")
-	if err := m.Download(ctx, relative, partial, snapshot.SHA256, snapshot.Size); err != nil {
+	if err := m.Download(ctx, path.Join("projects", snapshot.Project, relative), partial, snapshot.SHA256, snapshot.Size); err != nil {
 		return err
 	}
-	source := filepath.Join(m.cfg.Server.DataDir, filepath.FromSlash(partial))
-	if err := worldarchive.Validate(source, snapshot.Minecraft); err != nil {
+	source := filepath.Join(m.cfg.DataDir, filepath.FromSlash(partial))
+	if err := worldarchive.Validate(source, snapshot.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
 		return err
 	}
-	destination := filepath.Join(m.cfg.Server.DataDir, filepath.FromSlash(relative))
+	destination := filepath.Join(m.cfg.DataDir, filepath.FromSlash(relative))
 	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 		return err
 	}
@@ -182,9 +180,6 @@ func RetainedSnapshots(snapshots []model.Snapshot, rooms []model.Room, keep int,
 }
 
 func (m *Manager) evictSnapshots(ctx context.Context) error {
-	if !m.cfg.Archive.Enabled {
-		return nil
-	}
 	return m.db.Update(ctx, func(tx *store.Tx) error {
 		snapshots, err := store.All[model.Snapshot](ctx, tx, "snapshot")
 		if err != nil {
@@ -199,7 +194,10 @@ func (m *Manager) evictSnapshots(ctx context.Context) error {
 			if !snapshot.LocalAvailable || retained[snapshot.ID] {
 				continue
 			}
-			filename := filepath.Join(m.cfg.Server.DataDir, "snapshots", snapshot.RoomID, snapshot.ID+".tar.gz")
+			if !safeRelative(snapshot.Path) {
+				return fmt.Errorf("snapshot relative path is invalid")
+			}
+			filename := filepath.Join(m.cfg.DataDir, filepath.FromSlash(snapshot.Path))
 			if err = os.Remove(filename); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

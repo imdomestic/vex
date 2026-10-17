@@ -13,60 +13,66 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/imdomestic/chorus-testbed/controller/internal/archive"
-	"github.com/imdomestic/chorus-testbed/controller/internal/assets"
-	"github.com/imdomestic/chorus-testbed/controller/internal/auth"
-	"github.com/imdomestic/chorus-testbed/controller/internal/build"
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/events"
-	"github.com/imdomestic/chorus-testbed/controller/internal/gitmirror"
-	"github.com/imdomestic/chorus-testbed/controller/internal/kube"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/slp"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/archive"
+	"github.com/imdomestic/vex/controller/internal/auth"
+	"github.com/imdomestic/vex/controller/internal/build"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/events"
+	"github.com/imdomestic/vex/controller/internal/gitmirror"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/router"
+	"github.com/imdomestic/vex/controller/internal/runtime"
+	"github.com/imdomestic/vex/controller/internal/slp"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 type Runtime struct {
-	Generation           int64          `json:"generation"`
-	Spec                 *kube.RoomSpec `json:"spec"`
-	StartingAt           *time.Time     `json:"startingAt"`
-	StoppedAt            *time.Time     `json:"stoppedAt"`
-	LastProbe            *time.Time     `json:"lastProbe"`
-	NodeMissingSince     *time.Time     `json:"nodeMissingSince"`
-	PodNotReadySince     *time.Time     `json:"podNotReadySince"`
-	LostFrom             string         `json:"lostFrom"`
-	Failure              *model.Error   `json:"failure"`
-	FailureLogsCaptured  bool           `json:"failureLogsCaptured"`
-	ReconcileError       bool           `json:"reconcileError"`
-	Online               int            `json:"online"`
-	Restart              bool           `json:"restart"`
-	WorldExists          bool           `json:"worldExists"`
-	SeedRestoreRequested bool           `json:"seedRestoreRequested"`
-	ArchiveComplete      bool           `json:"archiveComplete"`
+	Generation           int64               `json:"generation"`
+	Spec                 *runtime.RoomSpec   `json:"spec"`
+	Resource             runtime.ResourceRef `json:"resource"`
+	StartingAt           *time.Time          `json:"startingAt"`
+	StoppedAt            *time.Time          `json:"stoppedAt"`
+	LastProbe            *time.Time          `json:"lastProbe"`
+	NodeMissingSince     *time.Time          `json:"nodeMissingSince"`
+	ProcessNotReadySince *time.Time          `json:"processNotReadySince"`
+	LostFrom             string              `json:"lostFrom"`
+	Failure              *model.Error        `json:"failure"`
+	FailureLogsCaptured  bool                `json:"failureLogsCaptured"`
+	ReconcileError       bool                `json:"reconcileError"`
+	Online               int                 `json:"online"`
+	Restart              bool                `json:"restart"`
+	WorldExists          bool                `json:"worldExists"`
+	SeedRestoreRequested bool                `json:"seedRestoreRequested"`
+	ArchiveComplete      bool                `json:"archiveComplete"`
 }
 
 type Manager struct {
 	mu        sync.Mutex
 	lastPrune time.Time
 	wake      reconcileSignals
-	Cfg       config.Config
+	Cfg       config.ProjectConfig
 	DB        *store.Store
 	Git       *gitmirror.Mirror
 	Builds    *build.Manager
-	Kube      *kube.Client
+	Backend   runtime.Backend
+	Registrar router.Registrar
 	Auth      *auth.Auth
 	Events    *events.Bus
 	Archive   *archive.Manager
-	Assets    *assets.Manager
+	Worlds    *worlds.Manager
 }
 
-func New(c config.Config, db *store.Store, g *gitmirror.Mirror, b *build.Manager, k *kube.Client, a *auth.Auth, e *events.Bus) *Manager {
-	return &Manager{Cfg: c, DB: db, Git: g, Builds: b, Kube: k, Auth: a, Events: e}
+func New(c config.ProjectConfig, db *store.Store, g *gitmirror.Mirror, b *build.Manager, backend runtime.Backend, registrar router.Registrar, a *auth.Auth, e *events.Bus) *Manager {
+	return &Manager{Cfg: c, DB: db, Git: g, Builds: b, Backend: backend, Registrar: registrar, Auth: a, Events: e}
 }
 
 func (m *Manager) Get(ctx context.Context, id string) (model.Room, error) {
 	var room model.Room
 	err := m.DB.Get(ctx, "room", id, &room)
+	if err == nil && room.Project != m.Cfg.ID {
+		return room, fmt.Errorf("room project differs from scoped storage")
+	}
 	return room, err
 }
 
@@ -96,19 +102,22 @@ func (m *Manager) save(ctx context.Context, room model.Room, rt Runtime) error {
 
 func (m *Manager) newRoom(id, kind, sha, loader, seed string) model.Room {
 	now := time.Now().UTC()
-	return model.Room{ID: id, Kind: kind, SHA: sha, Loader: loader, BuildID: BuildID(sha, loader), Host: id + "." + m.Cfg.Minecraft.Zone, Port: 25565, State: "stopped", Phase: "registered", Label: "testing", Players: []model.Player{}, Seed: seed, CreatedAt: now, UpdatedAt: now}
+	return model.Room{Project: m.Cfg.ID, ID: id, Kind: kind, SHA: sha, Loader: loader, BuildID: BuildID(sha, loader), Host: m.host(id), Port: 25565, State: "stopped", Phase: "registered", Label: "testing", Players: []model.Player{}, Seed: seed, CreatedAt: now, UpdatedAt: now}
 }
 
-func (m *Manager) Create(ctx context.Context, kind, sha, loader, seed, asset string) (model.Room, bool, error) {
+func (m *Manager) Create(ctx context.Context, kind, sha, loader, seed, world string) (model.Room, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.create(ctx, kind, sha, loader, seed, asset)
+	return m.create(ctx, kind, sha, loader, seed, world)
 }
 
-func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, asset string) (model.Room, bool, error) {
-	id, err := RoomID(kind, sha, loader, asset)
+func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, world string) (model.Room, bool, error) {
+	id, err := RoomID(kind, sha, loader, world)
 	if err != nil {
 		return model.Room{}, false, err
+	}
+	if len(id)+2+len(m.Cfg.ID) > 63 {
+		return model.Room{}, false, model.Failure("invalid_request", "房间和项目组成的主机名超过 63 个字符")
 	}
 	if !m.Cfg.Loaders[loader].Enabled {
 		return model.Room{}, false, model.Failure("invalid_request", "loader 尚未启用")
@@ -130,9 +139,9 @@ func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, asset str
 		seed = m.Cfg.Rooms.DefaultSeed
 	}
 	room := m.newRoom(id, kind, sha, loader, seed)
-	if kind == "asset" {
-		room.Asset = &asset
-		room.Seed = "asset:" + asset
+	if kind == "world" {
+		room.World = &world
+		room.Seed = "world:" + world
 		if _, err = m.resolveSeed(ctx, room, room.Seed); err != nil {
 			return room, false, err
 		}
@@ -169,7 +178,7 @@ func (m *Manager) syncBranches(ctx context.Context) error {
 	for _, ref := range refs {
 		seen[ref.Name] = true
 		for _, loader := range m.Cfg.EnabledLoaders() {
-			id := BranchID(ref.Name, loader, false)
+			id := BranchID(m.Cfg.ID, ref.Name, loader, false)
 			for _, existing := range rooms {
 				if existing.Kind == "branch" && existing.Branch != nil && *existing.Branch == ref.Name && existing.Loader == loader {
 					id = existing.ID
@@ -177,7 +186,7 @@ func (m *Manager) syncBranches(ctx context.Context) error {
 				}
 			}
 			if existing, ok := known[id]; ok && (existing.Branch == nil || *existing.Branch != ref.Name) {
-				id = BranchID(ref.Name, loader, true)
+				id = BranchID(m.Cfg.ID, ref.Name, loader, true)
 			}
 			room, ok := known[id]
 			if ok && (room.Branch == nil || *room.Branch != ref.Name) {
@@ -188,7 +197,7 @@ func (m *Manager) syncBranches(ctx context.Context) error {
 				name := ref.Name
 				room.Branch = &name
 			}
-			room.Host = id + "." + m.Cfg.Minecraft.Zone
+			room.Host = m.host(id)
 			room.BehindHead = room.SHA != ref.Head
 			if room.Generation == 0 {
 				room.SHA = ref.Head
@@ -233,7 +242,7 @@ func (m *Manager) Branches(ctx context.Context) ([]model.Branch, error) {
 	}
 	result := []model.Branch{}
 	for _, ref := range refs {
-		branch := model.Branch{Name: ref.Name, Head: ref.Head, Rooms: map[string]string{}, Builds: map[string]*model.BuildSummary{}}
+		branch := model.Branch{Project: m.Cfg.ID, Name: ref.Name, Head: ref.Head, Rooms: map[string]string{}, Builds: map[string]*model.BuildSummary{}}
 		for _, loader := range m.Cfg.EnabledLoaders() {
 			branch.Builds[loader] = nil
 			for _, room := range rooms {
@@ -300,13 +309,13 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 		}
 		delete(previous, b.Name)
 		if event != "" {
-			if err = m.Events.Publish(ctx, event, b); err != nil {
+			if err = m.Events.Publish(ctx, m.Cfg.ID, event, b); err != nil {
 				return false, err
 			}
 		}
 	}
 	for name := range previous {
-		if err = m.Events.Publish(ctx, "branch_deleted", map[string]string{"name": name}); err != nil {
+		if err = m.Events.Publish(ctx, m.Cfg.ID, "branch_deleted", map[string]string{"name": name}); err != nil {
 			return false, err
 		}
 	}
@@ -354,15 +363,15 @@ func (m *Manager) resolveSeed(ctx context.Context, room model.Room, expression s
 		return &model.SeedResolved{Kind: "empty"}, nil
 	case "snapshot":
 		return m.validateSeed(ctx, room, model.SeedResolved{Kind: kind, ID: id})
-	case "asset":
-		var asset model.Asset
-		if err := m.DB.Get(ctx, "asset", id, &asset); err != nil {
+	case "world":
+		var world model.World
+		if err := m.DB.Get(ctx, "world", id, &world); err != nil {
 			return nil, err
 		}
-		if asset.State != "active" || asset.Restore != nil && (asset.Restore.Status == "queued" || asset.Restore.Status == "running") {
-			return nil, model.Failure("conflict", "资产尚未处于可进入状态")
+		if world.State != "active" || world.Restore != nil && (world.Restore.Status == "queued" || world.Restore.Status == "running") {
+			return nil, model.Failure("conflict", "世界尚未处于可进入状态")
 		}
-		return m.validateSeed(ctx, room, model.SeedResolved{Kind: kind, ID: id, Rev: asset.LatestRev})
+		return m.validateSeed(ctx, room, model.SeedResolved{Kind: kind, ID: id, Rev: world.LatestRev})
 	default:
 		return nil, model.Failure("invalid_request", "未知的世界种子类型")
 	}
@@ -380,13 +389,13 @@ func (m *Manager) validateSeed(ctx context.Context, room model.Room, seed model.
 		if snapshot.Minecraft != m.Cfg.Minecraft.Version {
 			return nil, model.Failure("invalid_request", "种子 Minecraft 版本不一致")
 		}
-	case "asset":
-		var revision model.AssetRevision
-		if err := m.DB.Get(ctx, "asset_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
+	case "world":
+		var revision model.WorldRevision
+		if err := m.DB.Get(ctx, "world_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
 			return nil, err
 		}
 		if revision.Minecraft != m.Cfg.Minecraft.Version {
-			return nil, model.Failure("build_mismatch", "资产 Minecraft 版本不一致")
+			return nil, model.Failure("build_mismatch", "世界 Minecraft 版本不一致")
 		}
 		found := false
 		for _, loader := range revision.Requires.Loaders {
@@ -395,7 +404,7 @@ func (m *Manager) validateSeed(ctx context.Context, room model.Room, seed model.
 			}
 		}
 		if !found {
-			return nil, model.Failure("build_mismatch", "资产不支持目标 loader")
+			return nil, model.Failure("build_mismatch", "世界不支持目标 loader")
 		}
 	default:
 		return nil, model.Failure("invalid_request", "固定世界种子无效")
@@ -418,13 +427,19 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	if err = CanStart(room); err != nil {
 		return result, 0, err
 	}
-	if room.Asset != nil {
-		asset, err := m.Assets.Get(ctx, *room.Asset)
+	if !m.Cfg.Minecraft.AcceptEULA {
+		return result, 0, model.Failure("eula_not_accepted", "启动 Minecraft 服务器需要同意 EULA")
+	}
+	if identity.RoomID != "" && identity.Project != m.Cfg.ID {
+		return result, 0, model.Failure("unauthorized", "房间凭据不属于当前项目")
+	}
+	if room.World != nil {
+		world, err := m.Worlds.Get(ctx, *room.World)
 		if err != nil {
 			return result, 0, err
 		}
-		if asset.State != "active" || asset.Restore != nil && (asset.Restore.Status == "queued" || asset.Restore.Status == "running") {
-			return result, 0, model.Failure("conflict", "资产尚未处于可进入状态")
+		if world.State != "active" || world.Restore != nil && (world.Restore.Status == "queued" || world.Restore.Status == "running") {
+			return result, 0, model.Failure("conflict", "世界尚未处于可进入状态")
 		}
 	}
 	rt, err := m.runtime(ctx, id)
@@ -443,12 +458,12 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	if !Active(room.State) {
 		cachedBranch := false
 		if room.State == "failed" {
-			status, err := m.Kube.ObserveRoom(ctx, id)
+			status, err := m.observe(ctx, room, rt)
 			if err != nil {
 				return result, 0, err
 			}
-			if status.PodExists {
-				return result, 0, model.Failure("conflict", "旧周期 Pod 尚未退出，请先停止房间")
+			if status.ProcessExists {
+				return result, 0, model.Failure("conflict", "旧周期进程尚未退出，请先停止房间")
 			}
 		}
 		if room.Kind == "branch" {
@@ -496,8 +511,8 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 		if b.Status == "failed" {
 			return result, 0, model.Failure("build_failed", "构建失败，请显式重新构建后启动")
 		}
-		if room.SeedResolved != nil && room.SeedResolved.Kind == "asset" && b.Status == "ready" {
-			if err = m.assetCompatible(ctx, *room.SeedResolved, b); err != nil {
+		if room.SeedResolved != nil && room.SeedResolved.Kind == "world" && b.Status == "ready" {
+			if err = m.worldCompatible(ctx, *room.SeedResolved, b); err != nil {
 				return result, 0, err
 			}
 		}
@@ -508,7 +523,7 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 		room.LastError = nil
 		room.IdleSince = nil
 		room.Players = []model.Player{}
-		rt = Runtime{Generation: room.Generation, WorldExists: rt.WorldExists}
+		rt = Runtime{Generation: room.Generation, WorldExists: rt.WorldExists, Resource: rt.Resource}
 		if room.SeedResolved != nil && room.SeedResolved.Kind == "snapshot" {
 			var snapshot model.Snapshot
 			if err = m.DB.Get(ctx, "snapshot", room.SeedResolved.ID, &snapshot); err != nil {
@@ -524,7 +539,7 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	}
 	statusCode := 202
 	if room.State == "ready" {
-		status, probeErr := slp.Probe(ctx, m.Cfg.Rooms.RouterAddress, room.Host, room.Port)
+		status, probeErr := slp.Probe(ctx, m.Cfg.Server.RouterAddress, room.Host, room.Port)
 		if probeErr == nil && slp.Matches(status, room) {
 			statusCode = 200
 			room.Players = status.Sample()
@@ -538,7 +553,7 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	}
 	now := time.Now().UTC()
 	lease := model.Lease{ID: uuid.NewString(), Generation: room.Generation, ExpiresAt: now.Add(config.Duration(m.Cfg.Rooms.JoinLease))}
-	record := model.LeaseRecord{Lease: lease, RoomID: room.ID, Owner: identity.User, FromRoom: identity.RoomID, FromGeneration: identity.Generation}
+	record := model.LeaseRecord{Lease: lease, Project: m.Cfg.ID, RoomID: room.ID, Owner: identity.User, FromRoom: identity.RoomID, FromGeneration: identity.Generation}
 	room.UpdatedAt = now
 	room.IdleSince = nil
 	err = m.DB.Update(ctx, func(tx *store.Tx) error {
@@ -553,12 +568,12 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	return model.StartResult{Room: room, Lease: lease}, statusCode, err
 }
 
-func (m *Manager) assetCompatible(ctx context.Context, seed model.SeedResolved, b model.Build) error {
-	var revision model.AssetRevision
-	if err := m.DB.Get(ctx, "asset_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
+func (m *Manager) worldCompatible(ctx context.Context, seed model.SeedResolved, b model.Build) error {
+	var revision model.WorldRevision
+	if err := m.DB.Get(ctx, "world_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
 		return err
 	}
-	return assets.ValidateCompatibility(revision, b)
+	return worlds.ValidateCompatibility(revision, b)
 }
 
 func (m *Manager) Stop(ctx context.Context, id string, restart bool) (model.Room, int, error) {
@@ -653,11 +668,11 @@ func randomSecret() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func (m *Manager) makeSpec(ctx context.Context, room model.Room, b model.Build, node string) (kube.RoomSpec, error) {
-	spec := kube.RoomSpec{Room: room, Build: b, Node: node, Mods: []string{}}
+func (m *Manager) makeSpec(ctx context.Context, room model.Room, b model.Build, node string) (runtime.RoomSpec, error) {
+	spec := runtime.RoomSpec{Room: room, Build: b, Node: node, Mods: []string{}}
 	expires := time.Now().Add(30 * 24 * time.Hour)
 	var err error
-	spec.RoomToken, err = m.Auth.RoomToken(room.ID, room.Generation, room.BuildID, expires)
+	spec.RoomToken, err = m.Auth.RoomToken(m.Cfg.ID, room.ID, room.Generation, room.BuildID, expires)
 	if err != nil {
 		return spec, err
 	}
@@ -682,11 +697,11 @@ func (m *Manager) makeSpec(ctx context.Context, room model.Room, b model.Build, 
 			if err = m.DB.Get(ctx, "snapshot", seed.ID, &snapshot); err != nil {
 				return spec, err
 			}
-			path = "/v1/snapshots/" + seed.ID + "/download"
+			path = "/v2/projects/" + m.Cfg.ID + "/snapshots/" + seed.ID + "/download"
 			spec.SeedSHA256 = snapshot.SHA256
-		} else if seed.Kind == "asset" {
-			var revision model.AssetRevision
-			if err = m.DB.Get(ctx, "asset_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
+		} else if seed.Kind == "world" {
+			var revision model.WorldRevision
+			if err = m.DB.Get(ctx, "world_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
 				return spec, err
 			}
 			path = revision.World.URL
@@ -734,7 +749,14 @@ func (m *Manager) Log(ctx context.Context, id string) (string, error) {
 	if !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}
-	return m.Kube.Logs(ctx, id, 200)
+	rt, err := m.runtime(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if rt.Resource.ID == "" {
+		return "", nil
+	}
+	return m.Backend.Logs(ctx, rt.Resource, runtime.LogOptions{Tail: 200})
 }
 
-func (m *Manager) String() string { return fmt.Sprintf("rooms namespace=%s", m.Cfg.Rooms.Namespace) }
+func (m *Manager) String() string { return fmt.Sprintf("rooms project=%s", m.Cfg.ID) }

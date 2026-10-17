@@ -2,10 +2,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mc-router
-  namespace: chorus-system
+  namespace: vex-system
   labels:
     app.kubernetes.io/name: mc-router
-    app.kubernetes.io/part-of: chorus-testbed
+    app.kubernetes.io/part-of: vex
 spec:
   replicas: 1
   strategy:
@@ -17,7 +17,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mc-router
-        app.kubernetes.io/part-of: chorus-testbed
+        app.kubernetes.io/part-of: vex
     spec:
       serviceAccountName: mc-router
       nodeSelector:
@@ -35,9 +35,9 @@ spec:
           args: [--in-kube-cluster, --api-binding, ':8080']
           env:
             - name: KUBE_NAMESPACE
-              value: chorus-rooms
+              value: ''
             - name: WEBHOOK_URL
-              value: http://10.1.2.137:8790/v1/hooks/mc-router
+              value: http://10.1.2.137:8790/v2/hooks/router
             - name: WEBHOOK_EVENTS
               value: connect,disconnect
             - name: WEBHOOK_REQUIRE_USER
@@ -90,7 +90,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: mc-router
-  namespace: chorus-system
+  namespace: vex-system
 spec:
   type: LoadBalancer
   allocateLoadBalancerNodePorts: false

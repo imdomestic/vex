@@ -13,7 +13,7 @@ users.toml
 .env
 .DS_Store
 world/
-worlds/
+/worlds/
 snapshots/
 secrets/
 tokens/

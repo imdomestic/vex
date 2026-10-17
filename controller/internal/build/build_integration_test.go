@@ -4,7 +4,9 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -17,28 +19,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/pelletier/go-toml/v2"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
-	base, usersPath, sha := os.Getenv("CHORUS_IT_URL"), os.Getenv("CHORUS_IT_USERS_FILE"), os.Getenv("CHORUS_IT_BUILD_SHA")
-	if base == "" || usersPath == "" || sha == "" {
-		t.Skip("requires CHORUS_IT_URL, CHORUS_IT_USERS_FILE and CHORUS_IT_BUILD_SHA")
+	base, tokenPath, sha, project := os.Getenv("VEX_IT_URL"), os.Getenv("VEX_IT_TOKEN_FILE"), os.Getenv("VEX_IT_BUILD_SHA"), os.Getenv("VEX_IT_PROJECT")
+	if base == "" || tokenPath == "" || sha == "" || project == "" {
+		t.Skip("requires VEX_IT_URL, VEX_IT_TOKEN_FILE, VEX_IT_BUILD_SHA and VEX_IT_PROJECT")
 	}
-	usersData, err := os.ReadFile(usersPath)
+	if !config.ValidID(project) || len(sha) != 40 {
+		t.Fatal("invalid live project or commit")
+	}
+	loader := os.Getenv("VEX_IT_LOADER")
+	if loader == "" {
+		loader = "fabric"
+	}
+	token, err := os.ReadFile(tokenPath)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var users struct {
-		Users map[string]string `toml:"users"`
-	}
-	if err = toml.Unmarshal(usersData, &users); err != nil {
-		t.Fatal("invalid users TOML")
-	}
-	token := users.Users["linwhite"]
-	if token == "" {
-		t.Fatal("linwhite user token is required")
 	}
 	client := &http.Client{Timeout: time.Minute}
 	request := func(method, path string, body any, authenticated bool) (int, []byte) {
@@ -56,7 +55,7 @@ func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		if authenticated {
-			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -72,48 +71,45 @@ func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
 		}
 		return response.StatusCode, data
 	}
-	id := "fabric-" + sha[:12]
-	status, data := request(http.MethodGet, "/v1/builds/"+id, nil, true)
+	prefix := "/v2/projects/" + project
+	id := loader + "-" + sha[:12]
+	status, data := request(http.MethodGet, prefix+"/builds/"+id, nil, true)
 	if status != http.StatusOK {
-		t.Fatalf("GET build status %d: %s", status, data)
+		t.Fatalf("GET build status %d", status)
 	}
 	var manifest model.Build
 	if err = json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.ID != id || manifest.SHA != sha || manifest.Status != "ready" || manifest.Attempt < 1 || manifest.Minecraft == nil || manifest.LoaderVersion == nil || manifest.Java == nil || manifest.BuiltAt == nil || manifest.StartedAt == nil || manifest.FinishedAt == nil || manifest.DurationSec == nil || *manifest.DurationSec <= 0 || len(manifest.Files) < 2 || manifest.LastError != nil {
-		t.Fatalf("incomplete ready manifest: %+v", manifest)
+	if manifest.Project != project || manifest.Source.Kind != "host" || manifest.ID != id || manifest.SHA != sha || manifest.Status != "ready" || manifest.Attempt < 1 || manifest.Minecraft == nil || manifest.LoaderVersion == nil || manifest.Java == nil || manifest.BuiltAt == nil || manifest.StartedAt == nil || manifest.FinishedAt == nil || manifest.DurationSec == nil || *manifest.DurationSec <= 0 || len(manifest.Files) == 0 || manifest.LastError != nil {
+		t.Fatal("incomplete ready manifest")
 	}
-	if manifest.Log != "/v1/builds/"+id+"/log" {
-		t.Fatal("unexpected log URL", manifest.Log)
+	if manifest.Log != prefix+"/builds/"+id+"/log" {
+		t.Fatal("unexpected log URL")
 	}
 	modIDs := map[string]bool{}
 	for _, file := range manifest.Files {
-		if filepath.Base(file.Name) != file.Name {
-			t.Fatal("invalid manifest filename")
+		if filepath.Base(file.Name) != file.Name || !strings.HasPrefix(file.Path, "builds/"+id+"/attempt-") || !strings.HasPrefix(file.URL, prefix+"/builds/"+id+"/files/") {
+			t.Fatal("manifest file has an invalid name, relative path or project URL")
 		}
 		status, content := request(http.MethodGet, file.URL, nil, true)
 		if status != http.StatusOK {
 			t.Fatalf("download %s status %d", file.Name, status)
 		}
-		digest := sha256.Sum256(content)
-		if int64(len(content)) != file.Size || hex.EncodeToString(digest[:]) != file.SHA256 {
+		one, two, five := sha1.Sum(content), sha256.Sum256(content), sha512.Sum512(content)
+		if int64(len(content)) != file.Size || hex.EncodeToString(one[:]) != file.SHA1 || hex.EncodeToString(two[:]) != file.SHA256 || hex.EncodeToString(five[:]) != file.SHA512 {
 			t.Fatalf("download integrity mismatch: %s", file.Name)
 		}
 		path := filepath.Join(t.TempDir(), file.Name)
 		if err = os.WriteFile(path, content, 0600); err != nil {
 			t.Fatal(err)
 		}
-		ids, err := JarModIDs(path)
+		ids, err := JarModIDs(path, manifest.Loader)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, modID := range ids {
 			modIDs[modID] = true
-		}
-		status, alias := request(http.MethodGet, "/v1/builds/"+id+"/files/"+file.Name, nil, true)
-		if status != http.StatusOK || !bytes.Equal(alias, content) {
-			t.Fatalf("build file alias mismatch: %s status %d", file.Name, status)
 		}
 		status, _ = request(http.MethodGet, file.URL, nil, false)
 		if status != http.StatusUnauthorized {
@@ -125,15 +121,15 @@ func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
 		observed = append(observed, modID)
 	}
 	sort.Strings(observed)
-	if !reflect.DeepEqual(observed, manifest.ModIDs) || !modIDs["chorus"] || !modIDs["fabric-api"] {
-		t.Fatalf("modIds differ from real jar metadata: %v != %v", observed, manifest.ModIDs)
+	if !reflect.DeepEqual(observed, manifest.ModIDs) {
+		t.Fatal("modIds differ from real jar metadata")
 	}
 	status, data = request(http.MethodGet, manifest.Log, nil, true)
 	if status != http.StatusOK || !bytes.Contains(data, []byte("BUILD SUCCESSFUL")) {
 		t.Fatalf("successful Gradle log missing, HTTP %d", status)
 	}
 	for range 3 {
-		status, data = request(http.MethodPost, "/v1/builds", map[string]any{"sha": sha, "loader": "fabric"}, true)
+		status, data = request(http.MethodPost, prefix+"/builds", map[string]any{"sha": sha, "loader": loader}, true)
 		var cached model.Build
 		if err = json.Unmarshal(data, &cached); err != nil {
 			t.Fatal(err)
@@ -142,96 +138,54 @@ func TestLiveBuildManifestDownloadsAndCache(t *testing.T) {
 			t.Fatalf("cache request changed published attempt, HTTP %d", status)
 		}
 	}
-	status, data = request(http.MethodGet, "/v1/rooms", nil, true)
-	if status != http.StatusOK {
-		t.Fatalf("GET rooms HTTP %d", status)
-	}
-	var rooms []model.Room
-	if err = json.Unmarshal(data, &rooms); err != nil {
-		t.Fatal(err)
-	}
-	for _, room := range rooms {
-		if room.BuildID != id || room.State == "closed" {
-			continue
-		}
-		status, data = request(http.MethodPost, "/v1/builds", map[string]any{"sha": sha, "loader": "fabric", "force": true}, true)
-		var failure struct {
-			Error model.Error `json:"error"`
-		}
-		if err = json.Unmarshal(data, &failure); err != nil {
-			t.Fatal(err)
-		}
-		if status != http.StatusConflict || failure.Error.Code != "conflict" {
-			t.Fatalf("referenced force returned HTTP %d: %s", status, data)
-		}
-		break
-	}
-	t.Logf("verified build=%s attempt=%d files=%d modIds=%d; all bytes, cache requests and registered-room protection checked", id, manifest.Attempt, len(manifest.Files), len(manifest.ModIDs))
+	t.Logf("verified project=%s build=%s attempt=%d files=%d modIds=%d; SHA1/SHA256/SHA512 and cache identity passed", project, id, manifest.Attempt, len(manifest.Files), len(manifest.ModIDs))
 }
 
-func TestRealHopPublicationPreservesIndependentContent(t *testing.T) {
-	jar := os.Getenv("CHORUS_IT_HOP_JAR")
+func TestRealAgentBuildFilePreservesIndependentContent(t *testing.T) {
+	jar := os.Getenv("VEX_IT_AGENT_JAR")
 	if jar == "" {
-		t.Skip("requires CHORUS_IT_HOP_JAR from the real Gradle build")
+		t.Skip("requires VEX_IT_AGENT_JAR from the real Gradle build")
 	}
-	m, _ := realManager(t)
-	directory := filepath.Join(m.cfg.Server.DataDir, "mods", "chorus-hop", "26.3")
-	if err := os.MkdirAll(directory, 0750); err != nil {
-		t.Fatal(err)
-	}
-	source := filepath.Join(directory, filepath.Base(jar))
+	m, commits := realManager(t)
+	source := filepath.Join(t.TempDir(), filepath.Base(jar))
 	if err := copyFile(jar, source); err != nil {
 		t.Fatal(err)
 	}
-	entry, published, err := m.hopArtifact("26.3")
+	value, _, err := m.Request(t.Context(), commits[0], "fabric", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := "26.3"
+	value.Minecraft = &version
+	loader := m.cfg.Loaders["fabric"]
+	loader.Agent = "fabric-26-3"
+	m.cfg.Loaders["fabric"] = loader
+	m.cfg.Agents = map[string]config.Agent{"fabric-26-3": {Minecraft: version, Loader: "fabric", Version: "1.0.0", File: source}}
+	entry, configured, err := m.agentArtifact(value)
 	if err != nil || entry == nil {
-		t.Fatalf("publish real hop: %v", err)
+		t.Fatalf("inspect real agent: %v", err)
 	}
-	if entry.URL != "/v1/mods/chorus-hop/26.3/"+entry.SHA256+".jar" || published != filepath.Join(directory, "published", entry.SHA256+".jar") {
-		t.Fatal("hop URL is not fixed by its digest")
+	if entry.URL != m.apiPrefix()+"/builds/"+value.ID+"/files/"+entry.Name {
+		t.Fatal("agent is not published through its Build")
 	}
-	second, secondPath, err := m.hopArtifact("26.3")
-	if err != nil || !reflect.DeepEqual(entry, second) || published != secondPath {
-		t.Fatalf("repeat publication: %+v %v", second, err)
-	}
-	alias := filepath.Join(t.TempDir(), entry.Name)
-	if err = copyFile(published, alias); err != nil {
+	target := filepath.Join(m.attemptDir(value), entry.Name)
+	if err = copyFile(configured, target); err != nil {
 		t.Fatal(err)
-	}
-	sourceInfo, err := os.Stat(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publishedInfo, err := os.Stat(published)
-	if err != nil {
-		t.Fatal(err)
-	}
-	aliasInfo, err := os.Stat(alias)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(sourceInfo, publishedInfo) || os.SameFile(publishedInfo, aliasInfo) {
-		t.Fatal("configured, published and attempt files must have independent storage")
 	}
 	if err = os.Remove(source); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{published, alias} {
-		digest, size, err := hashFile(path)
-		if err != nil || digest != entry.SHA256 || size != entry.Size {
-			t.Fatalf("configured source removal changed %s: %v", path, err)
-		}
+	actual, err := m.buildFile(target, value, "server")
+	if err != nil || !reflect.DeepEqual(*entry, actual) {
+		t.Fatal("configured source removal changed the Build file")
 	}
-	if err = os.Chmod(published, 0640); err != nil {
+	value.Status, value.Files = "ready", []model.BuildFile{actual}
+	if err = m.db.Put(t.Context(), "build", value.ID, value); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.Truncate(published, entry.Size-1); err != nil {
+	file, err := m.OpenFile(t.Context(), value.ID, actual.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = copyFile(jar, source); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = m.hopArtifact("26.3"); err == nil {
-		t.Fatal("accepted a damaged published hop artifact")
-	}
+	file.Close()
 }

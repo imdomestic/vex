@@ -26,7 +26,7 @@ let
     };
   };
   runtime = python.withPackages (ps: [ ps.anvil-parser2 ps.nbtlib ]);
-in pkgs.writeShellScriptBin "chorus-world-scanner" ''
+in pkgs.writeShellScriptBin "vex-world-scanner" ''
   export PYTHONDONTWRITEBYTECODE=1
   exec ${runtime}/bin/python ${../tools/world-scanner/scan.py} "$@"
 ''

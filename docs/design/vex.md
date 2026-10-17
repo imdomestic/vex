@@ -1,6 +1,12 @@
 # vex 设计
 
-状态：草案 v0.2（2026-10-17）。
+状态：草案 v0.3（2026-10-18）。
+
+v0.3 相对 v0.2 的变化：
+
+- 明确部署拓扑：一个部署者一个 vexd，客户端同时连接多个 vexd；
+- 新增邀请登录与会话；
+- GitHub 登录提前到 P2。
 
 v0.2 相对 v0.1 的变化：
 
@@ -8,7 +14,7 @@ v0.2 相对 v0.1 的变化：
 - 新增游戏内大厅（lobby）；
 - 新增 ruri 上游化路线。
 
-现状依据：chorus-testbed `f035614` 的盘点报告 `STATE-REPORT.md`。每一轮的执行范围以 `docs/directives/` 中的指令为准。
+现状依据：提交 `f035614` 的[盘点报告](../../STATE-REPORT.md)。每一轮的执行范围以 `docs/directives/` 中的指令为准。设计原文保存在 [v0.3 原文](../directives/vex-v0.3-original.md)、[v0.2 原文](../directives/vex-v0.2-original.md)和 [v0.1 原文](../directives/vex-v0.1-original.md)，本文使用通用项目示例。
 
 ## 1. 定位
 
@@ -24,14 +30,21 @@ vex 是 Minecraft 模组开发者自托管的持续部署测试平台。核心�
 
 部署者（operator）可信。项目代码、CI 产物、仓库内的清单、上传的世界都不可信。
 
-chorus 是 vex 的第一个用户项目，vex 中不保留任何 chorus 专属代码。
+**部署拓扑**：
+
+- 一个部署者（一台机器或一个集群）只运行一个 vexd，项目都放在这个 vexd 里。
+- 不同部署者各自运行自己的 vexd。客户端（ruri、vex CLI）可以同时连接多个 vexd，并把它们汇总显示。
+- 同一台机器上也可以运行多个实例，只要数据目录、端口、zone 和 namespace 前缀互不冲突。
+- 只有一个项目时，CLI 和 ruri 自动选中它。
+
+项目通过配置接入 vex，平台代码保持项目无关。
 
 ## 2. 命名
 
 | 对象 | 名称 |
 | --- | --- |
 | 守护进程 | `vexd` |
-| 命令行 | `vex`，取代 chorusctl |
+| 命令行 | `vex` |
 | 游戏内模组 | vex-agent。mod ID 为 `vex_agent`（NeoForge 的 mod ID 不允许连字符），Java 包为 `com.imdomestic.vex.agent`。同一个 jar 用于项目房间和大厅 |
 | GitHub Action | `imdomestic/vex-action` |
 | 运维配置 | `/etc/vex/vexd.toml` |
@@ -43,7 +56,7 @@ chorus 是 vex 的第一个用户项目，vex 中不保留任何 chorus 专属�
 | 大厅地址 | `lobby.<zone>` |
 | 我们的 zone | `vex.internal` |
 | Kubernetes 后端 | 系统 namespace 为 `vex-system`，项目 namespace 为 `vex-p-<project>`，标签前缀为 `vex.imdomestic.com/` |
-| 仓库 | `imdomestic/vex`，由 chorus-testbed 改名而来 |
+| 仓库 | `imdomestic/vex` |
 
 提示：在 Minecraft 里，vex 也是恼鬼这种生物的名字，搜索 "minecraft vex" 结果基本都是它。名字保留没问题，但文档和仓库描述里要写全称，比如 "vex — Minecraft mod preview servers"。
 
@@ -65,7 +78,7 @@ chorus 是 vex 的第一个用户项目，vex 中不保留任何 chorus 专属�
 
 由此得出以下约束：
 
-1. **构建不在 vexd 主机上运行项目代码。** 主路径是由项目自己的 CI 构建。内置构建器只在容器或 Job 中运行；宿主机构建只允许 `trust = "trusted"` 的项目使用，等 chorus 改用 CI 后就删除。
+1. **构建不在 vexd 主机上运行项目代码。** 主路径是由项目自己的 CI 构建。内置构建器只在容器或 Job 中运行；宿主机构建只允许 `trust = "trusted"` 的项目使用，现有项目改用 CI 后删除宿主机构建路径。
 2. **项目房间按"运行不可信代码"来隔离。** Kubernetes 后端用 NetworkPolicy 实现。单机 Docker 后端的网络隔离较弱，文档中必须写清楚，并提供可选的 nftables 规则。
 3. **三类 token 的权限：**
    - 房间 token：只能操作本项目、本房间、本 generation；
@@ -82,7 +95,7 @@ chorus 是 vex 的第一个用户项目，vex 中不保留任何 chorus 专属�
 | 路由 | `router.Registrar` | mc-router 的 Kubernetes 注解（P1）；mc-router 的 Docker 标签或路由 API（P5）。具体方式需要实测 |
 | 存储 | `archive.Store`：Put、Verify、Get、Stat，key 为 `projects/<p>/…` 形式的相对路径 | `local`、`rsync-ssh`（P1，现有）；`s3`（P5） |
 | 构建 | `build.Source` | `ci`（P2，主路径）；`container`（P5，在 Docker 容器或 Kubernetes Job 里构建）；`host`（P1 过渡用，仅限 trusted 项目） |
-| 认证 | `auth.Provider`，输出身份 `provider:subject` | `static`（token 的 sha256，P1，用于自动化）；`github`（OAuth，P3）；`oidc`（P3）。两者都支持 device flow |
+| 认证 | `auth.Provider`，输出身份 `provider:subject`。无论通过哪种方式登录，最后都签发 vexd 自己的会话 | `invite`：一次性邀请链接，P1；`static`：服务账号令牌，只给自动化和 CI 用，P1；`github`：用 P2 建的 GitHub App 执行 device flow，P2；`oidc`：P3 |
 
 单机 Docker 后端的做法：
 
@@ -104,7 +117,7 @@ Kubernetes 后端保留现有的 StatefulSet、PVC、initContainer 和归档 Job
   - 文件：`[rooms.idle] commit = "10m"`
   - 环境变量：`VEX_ROOMS__IDLE__COMMIT=10m`
   - 命令行：`--rooms.idle.commit=10m`
-- **集合用"以 ID 为键的表"**，例如 `[projects.chorus]`。这样环境变量和命令行也能单独定位某一个条目。
+- **集合用"以 ID 为键的表"**，例如 `[projects.example]`。这样环境变量和命令行也能单独定位某一个条目。
 - **ID 规则**：`[a-z][a-z0-9-]{0,22}`，不能以 `-` 结尾，也不能包含 `--`。环境变量里，ID 段中的 `_` 解码为 `-`。
 - **列表**：在环境变量和命令行中用逗号分隔；如果值以 `[` 开头，就按 TOML 字面量解析。
 - **秘密**：
@@ -126,12 +139,12 @@ Kubernetes 后端保留现有的 StatefulSet、PVC、initContainer 和归档 Job
 
 ```toml
 [server]
-listen = ["100.64.0.43:8790", "10.1.2.137:8790"]
-public_base_url = "http://encore.inner.imdomestic.com:8790"
-internal_base_url = "http://10.1.2.137:8790"
+listen = ["192.0.2.10:8790"]
+public_base_url = "http://vex.example.com:8790"
+internal_base_url = "http://192.0.2.10:8790"
 data_dir = "/srv/vex"
 zone = "vex.internal"
-router_address = "10.1.2.137:25565"
+router_address = "192.0.2.10:25565"
 
 [minecraft]
 accept_eula = true           # 部署者明确同意 Minecraft EULA 后才允许开房；默认 false
@@ -146,14 +159,14 @@ storage_class = "local-path"
 # [runtime.docker]
 # host = "unix:///run/podman/podman.sock"
 
-[runtime.kubernetes.nodes.encore]
-k8s_name = "encore"
+[runtime.kubernetes.nodes.node-a]
+k8s_name = "node-a"
 roles = ["persistent", "ephemeral", "build"]
 max_rooms = 2
 priority = 10
 
-[runtime.kubernetes.nodes.seraph]
-k8s_name = "seraph"
+[runtime.kubernetes.nodes.node-b]
+k8s_name = "node-b"
 roles = ["ephemeral", "build"]
 max_rooms = 4
 priority = 20
@@ -166,32 +179,33 @@ build_image = "eclipse-temurin:25-jdk@sha256:…"     # container 构建器使�
 backend = "rsync-ssh"        # local | rsync-ssh | s3
 
 [archive.rsync_ssh]
-target = "vex-archive@tank.inner.imdomestic.com:/srv/archive/vex"
+target = "vex-archive@archive.example.com:/srv/archive/vex"
 identity_file = "/var/lib/vex/ssh/id_ed25519"
 known_hosts_file = "/var/lib/vex/ssh/known_hosts"
 bwlimit = "5M"
 
 [auth]
 signing_key_file = "/var/lib/vex/secrets/signing.key"
-session_ttl = "720h"
+session_ttl = "2160h"        # 会话有效期，每次使用后顺延
+invite_ttl = "24h"
+admin_socket = "/run/vex/admin.sock"   # 本机管理入口，可直接执行 vexd user invite 等命令
 
-[auth.providers.github]      # P3
+[auth.providers.github]      # P2：直接使用 [github.app] 执行 device flow
 type = "github"
-client_id = "…"
-client_secret_file = "/var/lib/vex/secrets/github-oauth"
 
-[github.app]                 # P2：拉取 CI 产物、写 PR 评论和 check
+[github.app]                 # P2：拉取 CI 产物、写 PR 评论和 check、GitHub 登录
 app_id = 0
+client_id = "…"
 private_key_file = "/var/lib/vex/secrets/github-app.pem"
 # webhook_secret_file = "…"  # vexd 能被公网访问时才配置，否则改为轮询
 
-[users.linwhite]
+[users.operator]
 admin = true
-token_sha256 = "…"           # 静态 token，供自动化使用
+token_sha256 = "…"           # 可选：服务账号令牌，只给自动化和 CI 用；人工使用一律通过登录
 identities = ["github:<数字 ID>"]
 minecraft = ["<uuid>"]       # 也可以在大厅用 /vex link 绑定，绑定结果存 DB
 
-[users.hank]
+[users.developer]
 token_sha256 = "…"
 
 [lobby]                      # P4
@@ -200,20 +214,20 @@ minecraft_version = "26.3"
 loader_version = "0.19.5"
 access = "linked"            # linked | public
 
-[projects.chorus]
-remote = "https://github.com/imdomestic/chorus.git"
+[projects.example]
+remote = "https://git.example.com/example/mod.git"
 default_branch = "main"
 trust = "trusted"
-manifest_fallback = "/etc/vex/manifests/chorus.toml"
+manifest_fallback = "/etc/vex/manifests/example.toml"
 
-[projects.chorus.github]
-repository = "imdomestic/chorus"
+[projects.example.github]
+repository = "example/mod"
 derive_roles = true          # P3：按 GitHub 仓库权限推导角色，admin→owner，write→developer，read→viewer
 
-[projects.chorus.build]
+[projects.example.build]
 source = "ci"                # ci | container | host
 
-[projects.chorus.ci]         # P2
+[projects.example.ci]         # P2
 mode = "pull"                # pull：vexd 轮询 GitHub 产物；push：CI 用 OIDC 推送
 workflow = ".github/workflows/vex.yml"
 artifact = "vex-build"
@@ -221,16 +235,16 @@ pr_previews = true
 fork_previews = "approval"   # off | approval（维护者评论 /vex preview）| auto
 preview_access = "members"   # members | linked | public
 
-[projects.chorus.members]
-linwhite = "owner"
-hank = "developer"
+[projects.example.members]
+operator = "owner"
+developer = "developer"
 
-[projects.chorus.policy]     # P3
+[projects.example.policy]     # P3
 auto_build = ["main", "dev"] # 只对 container/host 构建生效；ci 模式由 CI 自己触发
 on_new_head = "when_empty"
 agent_delegation = true
 
-[projects.chorus.quota]
+[projects.example.quota]
 max_rooms = 4
 room_memory_max = "6Gi"
 build_cache = 20
@@ -303,7 +317,7 @@ sha512 = "…"
 side = "both"
 
 [world]
-extra_root_entries = ["chorus-checkpoint.json"]
+extra_root_entries = ["example-checkpoint.json"]
 
 [rooms]
 memory = "4G"
@@ -358,7 +372,7 @@ bundle 有两种交付方式。
 
 vexd 通过 GitHub App 维护一条 PR 评论，房间状态变化时就地更新。评论包含：
 
-- 服务器地址：`pr12-fabric--chorus.mc.example.com`；
+- 服务器地址：`pr12-fabric--example.mc.example.com`；
 - mrpack 下载链接；
 - 当前提交和构建状态；
 - 房间状态；
@@ -480,6 +494,8 @@ mrpack 的内容如下：
 目标是让 ruri 的 fork 和上游只差一个"默认关闭、自成一体"的 vex 功能，然后合回上游，随上游发布进入 nixpkgs。
 
 - **入口**：设置页新增「实验性功能」，其中有 vex 开关。开关关闭时，GUI 不显示 vex 页面，CLI 的 `vex` 命令组不出现在帮助、命令发现和 schema 中，也不发起任何网络请求或钥匙串读取。
+- **多服务器**：开关下方是一个「Vex 服务器」列表，每个服务器单独记录地址和登录状态。服务器页和 Git 页按「服务器 → 项目」汇总显示。
+- **登录**：GUI 不再出现 token 输入框。添加服务器时可以直接粘贴邀请链接，一步完成添加和登录；服务器支持的话，也可以点击「使用 GitHub 登录」。登录后显示「已登录：用户名」，并提供「退出登录」。服务账号令牌只能在 CLI 中通过 `--token-stdin` 使用。
 - **去掉 fork 自己的差异**：fork 现有的独立应用改动全部撤销，包括 bundle id、数据目录、钥匙串、CLI 名称、Sparkle、签名、窗口标题、语言设置。
 - **模组同步**：改为调用上游已有的 `MRPack.swift` 做导入和更新，删除 fork 自己的 manifest 同步代码（R2，在 vex P2 之后）。
 - **通用修复单独提交**：比如 26.3 SDL 窗口的退出修复，先作为独立 PR 提交给上游。
@@ -514,10 +530,13 @@ mrpack 的内容如下：
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/v2/health` | — | |
-| GET | `/v2/meta` | U | 版本、zone、运行时目录、agent 版本、启用的认证方式 |
-| POST | `/v2/auth/device` | — | 开始 device flow（P3） |
-| POST | `/v2/auth/device/poll` | — | 授权完成后返回会话 token（P3） |
-| POST | `/v2/auth/logout` | U | 吊销当前会话 token（P3） |
+| GET | `/v2/meta` | — | 服务器名称、版本、可用的登录方式；登录后额外返回 zone、运行时目录、agent 版本 |
+| POST | `/v2/auth/invites` | U/A | 普通用户给自己发，admin 可以给任何用户发；返回链接 `<public_base_url>/i/<code>`，只显示这一次（P1） |
+| GET | `/i/{code}` | — | 静态说明页，告诉对方在哪里粘贴链接；不会兑换邀请（P1） |
+| POST | `/v2/auth/invites/redeem` | — | 请求体 `{code, client}`，换取会话 token；按来源 IP 和全局限速（P1） |
+| POST | `/v2/auth/device`、`/v2/auth/device/poll` | — | GitHub device flow 在 P2，OIDC 在 P3 |
+| GET、DELETE | `/v2/me/sessions`、`/v2/me/sessions/{id}` | U | 查看或吊销自己已登录的设备（P1） |
+| POST | `/v2/auth/logout` | U | 吊销当前会话（P1） |
 | GET | `/v2/me` | U | 用户、角色、绑定的 MC 账号 |
 | GET | `/v2/projects`、`/v2/projects/{p}` | U、V | |
 | GET | `/v2/nodes` | A | |
@@ -548,23 +567,23 @@ mrpack 的内容如下：
 | GET | `…/rooms/{id}/pack.mrpack` | V/S | P2 |
 | DELETE | `…/rooms/{id}/leases/{lease}` | U/R | |
 | GET | `…/rooms/{id}/log`、`…/rooms/{id}/events` | D、V | |
-| GET | `…/snapshots…` | | 同 v0.1 |
-| GET | `…/worlds…`、`…/packs…` | | 同 v0.1 |
+| GET | `…/snapshots…` | | 见 [v0.1 原文](../directives/vex-v0.1-original.md) |
+| GET | `…/worlds…`、`…/packs…` | | 见 [v0.1 原文](../directives/vex-v0.1-original.md) |
 | GET | `…/hop/destinations` | R/L | |
 | POST | `…/hop` | R/L | |
 
 带 `Vex-On-Behalf-Of` 请求头的 R/L 请求，规则见 §11.3。
 
-v1 中的 `/v1/deps/{sha}` 和 `/v1/mods/chorus-hop/…` 已删除。
+构建依赖和平台 agent 统一使用项目级 Build 文件路由。
 
 ## 14. 路线
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | P0 | 清理 encore 磁盘，核对 main 快照，仓库改名 | 根盘余量回升；main 快照可以恢复 |
-| P1 | 重命名；配置系统；项目维度；权限；API v2；数据迁移；第二个项目；后端接口（Kubernetes 实现）；存储接口；认证接口（static）；单级房间地址；EULA；通用的世界发布 CLI | 两个项目并行运行；chorus 数据完整；后端边界检查通过 |
-| P2 | vex.toml；vex-action；CI pull 模式（GitHub App），之后做 push 模式；PR 房间、PR 评论和 check；mrpack；chorus 改用 CI 构建 | 在 chorus 开一个 PR，几分钟内评论里出现地址和 mrpack，用 Prism 导入后能进入 |
-| P3 | `on_new_head` 自动滚动；GitHub/OIDC 登录和 device flow；按 GitHub 权限推导角色 | push 后无人操作，房间自动滚动；`vex login` 走 device flow |
+| P1 | 重命名；配置系统；项目维度；权限；API v2；数据迁移；第二个项目；后端接口（Kubernetes 实现）；存储接口；认证接口；邀请登录与会话；单级房间地址；EULA；通用的世界发布 CLI | 两个项目并行运行；迁移项目数据完整；后端边界检查通过；成员通过邀请链接登录 |
+| P2 | vex.toml；vex-action；CI pull 模式（GitHub App），之后做 push 模式；PR 房间、PR 评论和 check；mrpack；现有项目改用 CI 构建；GitHub 登录（device flow） | 在 example 项目打开 PR，几分钟内评论里出现地址和 mrpack，用 Prism 导入后能进入；ruri 点击「使用 GitHub 登录」能完成登录 |
+| P3 | `on_new_head` 自动滚动；OIDC 登录；按 GitHub 权限推导角色 | push 后无人操作，房间自动滚动 |
 | P4 | 大厅；vex-agent 界面；账号绑定；按指纹跳转；`launch_intent` | 原版客户端进入大厅，开一个 PR 房间，复制地址后用 Prism 进入；ruri 能自动重启进入 |
 | P5 | Docker/Podman 后端；S3 存储；container 构建器；NeoForge；世界扫描器改写为 Go | 在一台只装了 Docker 的单机上，从零部署并跑通示例项目 |
 | P6 | 公开发布 | 见 §15 |
@@ -577,7 +596,7 @@ v1 中的 `/v1/deps/{sha}` 和 `/v1/mods/chorus-hop/…` 已删除。
   - vex-agent 和 vex-action 建议用 MIT 或 Apache-2.0，方便模组作者直接引入。
   - ruri 中的代码随上游，为 GPL-3.0。
 - **EULA**：文档里写明 vex 不分发服务端 jar，部署者需要自行同意 EULA，并配置 `accept_eula`。
-- **仓库历史**：历史中有内网 IP、主机名、用户名和 chorus 资产路径。公开前先审查历史，或者从一个干净的提交重新开始。
+- **仓库历史**：历史中有内网 IP、主机名、用户名和项目资产路径。公开前先审查历史，或者从一个干净的提交重新开始。
 - **TLS**：为 API 配置 TLS，或者在文档中要求使用反向代理。push 模式必须启用 TLS。
 - **交付物**：
   - 静态二进制；

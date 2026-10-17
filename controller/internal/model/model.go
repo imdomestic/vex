@@ -18,14 +18,23 @@ func Failure(code, message string) *Error { return &Error{Code: code, Message: m
 
 type BuildFile struct {
 	Name   string `json:"name"`
+	SHA1   string `json:"sha1"`
 	SHA256 string `json:"sha256"`
+	SHA512 string `json:"sha512"`
 	Size   int64  `json:"size"`
 	Side   string `json:"side"`
 	URL    string `json:"url"`
+	Path   string `json:"path"`
+}
+
+type BuildSource struct {
+	Kind string `json:"kind"`
 }
 
 type Build struct {
+	Project       string      `json:"project"`
 	ID            string      `json:"id"`
+	Source        BuildSource `json:"source"`
 	SHA           string      `json:"sha"`
 	Loader        string      `json:"loader"`
 	Status        string      `json:"status"`
@@ -50,13 +59,15 @@ type BuildSummary struct {
 }
 
 type Branch struct {
-	Name   string                   `json:"name"`
-	Head   string                   `json:"head"`
-	Rooms  map[string]string        `json:"rooms"`
-	Builds map[string]*BuildSummary `json:"builds"`
+	Project string                   `json:"project"`
+	Name    string                   `json:"name"`
+	Head    string                   `json:"head"`
+	Rooms   map[string]string        `json:"rooms"`
+	Builds  map[string]*BuildSummary `json:"builds"`
 }
 
 type Commit struct {
+	Project string                   `json:"project"`
 	SHA     string                   `json:"sha"`
 	Parents []string                 `json:"parents"`
 	Subject string                   `json:"subject"`
@@ -78,6 +89,7 @@ type SeedResolved struct {
 }
 
 type Room struct {
+	Project      string        `json:"project"`
 	ID           string        `json:"id"`
 	Kind         string        `json:"kind"`
 	Branch       *string       `json:"branch"`
@@ -96,7 +108,7 @@ type Room struct {
 	IdleSince    *time.Time    `json:"idleSince"`
 	Seed         string        `json:"seed"`
 	SeedResolved *SeedResolved `json:"seedResolved"`
-	Asset        *string       `json:"asset"`
+	World        *string       `json:"world"`
 	LastSnapshot *time.Time    `json:"lastSnapshot"`
 	LastError    *Error        `json:"lastError"`
 	CreatedAt    time.Time     `json:"createdAt"`
@@ -112,6 +124,7 @@ type Lease struct {
 
 type LeaseRecord struct {
 	Lease
+	Project        string `json:"project"`
 	RoomID         string `json:"roomId"`
 	Owner          string `json:"owner"`
 	FromRoom       string `json:"fromRoom"`
@@ -131,16 +144,64 @@ type Limits struct {
 }
 
 type Meta struct {
-	Minecraft     string   `json:"minecraft"`
-	Java          int      `json:"java"`
-	Zone          string   `json:"zone"`
-	Loaders       []string `json:"loaders"`
-	PublicBaseURL string   `json:"publicBaseURL"`
-	Limits        Limits   `json:"limits"`
+	Name          string                    `json:"name"`
+	Version       string                    `json:"version"`
+	Zone          string                    `json:"zone"`
+	PublicBaseURL string                    `json:"publicBaseURL"`
+	Runtimes      map[string]RuntimeCatalog `json:"runtimes"`
+	Agents        []AgentVersion            `json:"agents"`
+	Auth          AuthMethods               `json:"auth"`
+}
+
+type AuthMethods struct {
+	Methods []string `json:"methods"`
+}
+
+type Session struct {
+	ID         string    `json:"id"`
+	User       string    `json:"user"`
+	Client     string    `json:"client"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastUsedAt time.Time `json:"lastUsedAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	Current    bool      `json:"current"`
+}
+
+type RuntimeCatalog struct {
+	Java        int    `json:"java"`
+	ServerImage string `json:"serverImage"`
+}
+
+type AgentVersion struct {
+	Minecraft string `json:"minecraft"`
+	Loader    string `json:"loader"`
+	Version   string `json:"version"`
+}
+
+type Project struct {
+	ID            string         `json:"id"`
+	Remote        string         `json:"remote"`
+	DefaultBranch string         `json:"defaultBranch"`
+	Role          string         `json:"role"`
+	Minecraft     string         `json:"minecraft"`
+	Java          int            `json:"java"`
+	Loaders       []string       `json:"loaders"`
+	Policy        map[string]any `json:"policy"`
+	Quota         map[string]any `json:"quota"`
+}
+
+type User struct {
+	ID         string            `json:"id"`
+	Admin      bool              `json:"admin"`
+	Minecraft  []string          `json:"minecraft"`
+	Identities []string          `json:"identities"`
+	Projects   map[string]string `json:"projects"`
 }
 
 type Node struct {
 	Name          string   `json:"name"`
+	Roles         []string `json:"roles"`
+	Priority      int      `json:"priority"`
 	Ready         bool     `json:"ready"`
 	Schedulable   bool     `json:"schedulable"`
 	MaxRunning    int      `json:"maxRunning"`
@@ -150,7 +211,7 @@ type Node struct {
 
 type Requirements struct {
 	Loaders    []string `json:"loaders"`
-	ChorusMod  bool     `json:"chorusMod"`
+	Mods       []string `json:"mods"`
 	Namespaces []string `json:"namespaces"`
 }
 
@@ -166,7 +227,7 @@ type Source struct {
 	Notes  string  `json:"notes"`
 }
 
-type AssetMetadata struct {
+type WorldMetadata struct {
 	ID           string       `json:"id"`
 	Title        string       `json:"title"`
 	Minecraft    string       `json:"minecraft"`
@@ -176,13 +237,17 @@ type AssetMetadata struct {
 }
 
 type WorldFile struct {
+	SHA1   string `json:"sha1"`
 	SHA256 string `json:"sha256"`
+	SHA512 string `json:"sha512"`
 	Size   int64  `json:"size"`
 	URL    string `json:"url"`
+	Path   string `json:"path"`
 }
 
-type AssetRevision struct {
-	AssetMetadata
+type WorldRevision struct {
+	WorldMetadata
+	Project        string     `json:"project"`
 	Rev            string     `json:"rev"`
 	SnapshotID     *string    `json:"snapshotId"`
 	World          WorldFile  `json:"world"`
@@ -190,7 +255,8 @@ type AssetRevision struct {
 	TankVerifiedAt *time.Time `json:"tankVerifiedAt"`
 }
 
-type Asset struct {
+type World struct {
+	Project      string        `json:"project"`
 	ID           string        `json:"id"`
 	Title        string        `json:"title"`
 	State        string        `json:"state"`
@@ -198,16 +264,19 @@ type Asset struct {
 	Minecraft    string        `json:"minecraft"`
 	Requires     Requirements  `json:"requires"`
 	ResourcePack *PackRef      `json:"resourcePack"`
-	Restore      *AssetRestore `json:"restore"`
+	Restore      *WorldRestore `json:"restore"`
 }
 
 type PackRevision struct {
+	Project   string    `json:"project"`
 	ID        string    `json:"id"`
 	Rev       string    `json:"rev"`
 	SHA256    string    `json:"sha256"`
 	SHA1      string    `json:"sha1"`
+	SHA512    string    `json:"sha512"`
 	Size      int64     `json:"size"`
 	URL       string    `json:"url"`
+	Path      string    `json:"path"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -220,21 +289,25 @@ type Restore struct {
 	Error       *Error     `json:"error"`
 }
 
-type AssetRestore struct {
+type WorldRestore struct {
 	Restore
 	Revision string `json:"revision"`
 }
 
 type Snapshot struct {
+	Project        string     `json:"project"`
 	ID             string     `json:"id"`
 	RoomID         string     `json:"roomId"`
 	RoomGeneration int64      `json:"roomGeneration"`
 	BuildID        string     `json:"buildId"`
 	Minecraft      string     `json:"minecraft"`
-	Asset          *PackRef   `json:"asset"`
+	World          *PackRef   `json:"world"`
 	CapturedAt     time.Time  `json:"capturedAt"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	SHA256         string     `json:"sha256"`
+	SHA1           string     `json:"sha1"`
+	SHA512         string     `json:"sha512"`
+	Path           string     `json:"path"`
 	Size           int64      `json:"size"`
 	LocalAvailable bool       `json:"localAvailable"`
 	TankVerifiedAt *time.Time `json:"tankVerifiedAt"`
@@ -242,6 +315,7 @@ type Snapshot struct {
 }
 
 type HopDestination struct {
+	Project string  `json:"project"`
 	Dest    string  `json:"dest"`
 	Kind    string  `json:"kind"`
 	ID      string  `json:"id"`
@@ -252,11 +326,13 @@ type HopDestination struct {
 }
 
 type Sync struct {
-	Rooms  []Room  `json:"rooms"`
-	Builds []Build `json:"builds"`
+	Project string  `json:"project"`
+	Rooms   []Room  `json:"rooms"`
+	Builds  []Build `json:"builds"`
 }
 
 type Transfer struct {
+	Project    string     `json:"project"`
 	ID         string     `json:"id"`
 	Kind       string     `json:"kind"`
 	ObjectID   string     `json:"objectId"`

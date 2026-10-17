@@ -2,126 +2,88 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mc-router
-  namespace: chorus-system
+  namespace: vex-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: mc-router
-  namespace: chorus-rooms
+  name: vex-mc-router
 rules:
   - apiGroups: [""]
-    resources: [services, endpoints]
-    verbs: [get, list, watch]
-  - apiGroups: [discovery.k8s.io]
-    resources: [endpointslices]
+    resources: [services]
     verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: mc-router
-  namespace: chorus-rooms
+  name: vex-mc-router
 subjects:
   - kind: ServiceAccount
     name: mc-router
-    namespace: chorus-system
+    namespace: vex-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: mc-router
+  kind: ClusterRole
+  name: vex-mc-router
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: chorusd
-  namespace: chorus-rooms
+  name: vexd
+  namespace: vex-system
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: chorusd
-  namespace: chorus-rooms
+  name: vexd
 rules:
   - apiGroups: [""]
-    resources: [services, pods, pods/exec, pods/log, persistentvolumeclaims, secrets, events]
+    resources: [namespaces]
+    verbs: [get, list, create]
+  - apiGroups: [""]
+    resources: [services, pods, persistentvolumeclaims, secrets, resourcequotas, limitranges]
     verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
   - apiGroups: [apps]
     resources: [statefulsets, statefulsets/scale]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [events.k8s.io]
-    resources: [events]
-    verbs: [get, list, watch, create, update, patch, delete]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: chorusd
-  namespace: chorus-rooms
-subjects:
-  - kind: ServiceAccount
-    name: chorusd
-    namespace: chorus-rooms
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: chorusd
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: chorusd-nodes
-rules:
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, create, update, patch]
   - apiGroups: [""]
     resources: [nodes]
     verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: chorusd-nodes
+  name: vexd
 subjects:
   - kind: ServiceAccount
-    name: chorusd
-    namespace: chorus-rooms
+    name: vexd
+    namespace: vex-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: chorusd-nodes
+  name: vexd
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: chorusd-api
-  namespace: chorus-rooms
+  name: vexd-api
+  namespace: vex-system
   annotations:
-    kubernetes.io/service-account.name: chorusd
+    kubernetes.io/service-account.name: vexd
 type: kubernetes.io/service-account-token
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: chorusd-router
-  namespace: chorus-system
-rules:
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: chorusd-router
-  namespace: chorus-system
-subjects:
-  - kind: ServiceAccount
-    name: chorusd
-    namespace: chorus-rooms
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: chorusd-router

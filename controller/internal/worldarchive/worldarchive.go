@@ -37,7 +37,14 @@ func Digest(file string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, err
 }
 
-func Validate(file, minecraft string) error {
+func Validate(file, minecraft string, extraRootEntries ...string) error {
+	allowed := map[string]bool{"level.dat": true, "level.dat_old": true, "session.lock": true, "icon.png": true, "region": true, "entities": true, "poi": true, "data": true, "players": true, "playerdata": true, "advancements": true, "stats": true, "datapacks": true, "dimensions": true, "DIM-1": true, "DIM1": true}
+	for _, entry := range extraRootEntries {
+		if entry == "" || entry == "." || entry == ".." || strings.ContainsAny(entry, "/\\\x00\n\r") {
+			return fmt.Errorf("invalid extra world root entry")
+		}
+		allowed[entry] = true
+	}
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -80,7 +87,6 @@ func Validate(file, minecraft string) error {
 		}
 		rel := strings.TrimPrefix(name, "world/")
 		root, _, _ := strings.Cut(rel, "/")
-		allowed := map[string]bool{"level.dat": true, "level.dat_old": true, "session.lock": true, "icon.png": true, "chorus-checkpoint.json": true, "region": true, "entities": true, "poi": true, "data": true, "players": true, "playerdata": true, "advancements": true, "stats": true, "datapacks": true, "dimensions": true, "DIM-1": true, "DIM1": true}
 		if !allowed[root] {
 			return fmt.Errorf("unexpected world content %q", root)
 		}

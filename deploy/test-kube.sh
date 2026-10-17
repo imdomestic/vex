@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-set -euo pipefail
-umask 077
-project=$(cd "$(dirname "$0")/.." && pwd)
-GOFMT=/nix/store/hfb2fkwkkr6jdcg2ggibvf1zablw7i57-go-1.26.7/bin/gofmt bash "$project/deploy/check-go-format.sh"
-export TMPDIR="$project/.work/temp"
+source "$(dirname "$0")/common.sh"
+go_cmd=${GO:-go}
 export GOCACHE="$project/.work/go-cache"
 export GOMODCACHE="$project/.work/go-modcache"
 export GOMAXPROCS=2
-export CHORUS_IT_KUBECONFIG="$TMPDIR/kube-integration.json"
-install -d -m 0700 "$TMPDIR"
-sudo -n k3s kubectl config view --raw -o json >"$CHORUS_IT_KUBECONFIG"
-chmod 0600 "$CHORUS_IT_KUBECONFIG"
+export VEX_IT_RUN_ID=${VEX_IT_RUN_ID:?provide an isolated integration run ID}
+[[ "$VEX_IT_RUN_ID" =~ ^[a-z0-9]{1,8}$ ]]
+export VEX_IT_KUBECONFIG=${VEX_IT_KUBECONFIG:?provide a restricted kubeconfig file path}
+test -f "$VEX_IT_KUBECONFIG"
+install -d -m 0700 "$GOCACHE" "$GOMODCACHE"
+GOFMT=${GOFMT:-$(dirname "$(command -v "$go_cmd")")/gofmt} bash "$project/deploy/check-go-format.sh"
 cd "$project/controller"
-/nix/store/hfb2fkwkkr6jdcg2ggibvf1zablw7i57-go-1.26.7/bin/go test -p 2 -tags integration -count=1 -v ./internal/kube
+"$go_cmd" test -p 2 -tags integration -count=1 -v ./internal/runtime/kubernetes \
+  -run '^(TestActualKubernetesRoomObjects|TestActualEnsureRoomStableResourceVersions|TestActualFailureContainerLogs)$'

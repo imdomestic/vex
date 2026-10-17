@@ -11,18 +11,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/auth"
-	"github.com/imdomestic/chorus-testbed/controller/internal/build"
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/events"
-	"github.com/imdomestic/chorus-testbed/controller/internal/gitmirror"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/auth"
+	"github.com/imdomestic/vex/controller/internal/build"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/events"
+	"github.com/imdomestic/vex/controller/internal/gitmirror"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
 )
 
 func freshnessGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	command := exec.CommandContext(t.Context(), "git", append([]string{"-c", "user.name=Chorus Integration", "-c", "user.email=chorus@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
+	command := exec.CommandContext(t.Context(), "git", append([]string{"-c", "user.name=Vex Integration", "-c", "user.email=vex@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 	command.Dir = dir
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -58,18 +58,25 @@ func freshnessManager(t *testing.T) (*Manager, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
-	cfg := config.Config{
-		Server:    config.Server{DataDir: filepath.Join(root, "data")},
+	global := db
+	db, err = db.WithProject("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { global.Close() })
+	cfg := config.ProjectConfig{
+		ID: "test", DataDir: filepath.Join(root, "data"), Trust: "trusted",
+		Server:    config.Server{Zone: "vex.invalid"},
 		Loaders:   map[string]config.Loader{"fabric": {Enabled: true}},
-		Minecraft: config.Minecraft{Zone: "chorus.invalid"},
-		Rooms:     config.Rooms{DefaultSeed: "empty", JoinLease: "1m"},
+		Minecraft: config.ProjectMinecraft{AcceptEULA: true},
+		Rooms:     config.EffectiveRooms{DefaultSeed: "empty", JoinLease: "1m"},
+		Build:     config.EffectiveBuild{ProjectBuild: config.ProjectBuild{Source: "host"}},
 	}
 	builder, err := build.New(cfg, db, mirror)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := New(cfg, db, mirror, builder, nil, nil, events.New(db))
+	manager := New(cfg, db, mirror, builder, nil, nil, nil, events.New(global, "test"))
 	if err = manager.SyncBranches(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +91,7 @@ func TestBranchStartFetchesRealHeadAndPublishesEvent(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			manager, source, _ := freshnessManager(t)
-			_, changes, unsubscribe, err := manager.Events.Subscribe(t.Context(), "")
+			_, changes, unsubscribe, err := manager.Events.Subscribe(t.Context(), []string{"test"}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -148,7 +155,7 @@ func TestBranchStartUsesRealCachedMirrorWhenSourceUnavailable(t *testing.T) {
 
 func TestRefreshRegistersAndPrunesRealBranches(t *testing.T) {
 	manager, source, _ := freshnessManager(t)
-	_, changes, unsubscribe, err := manager.Events.Subscribe(t.Context(), "")
+	_, changes, unsubscribe, err := manager.Events.Subscribe(t.Context(), []string{"test"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

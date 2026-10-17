@@ -1,0 +1,12 @@
+# source default_server = default (built-in)
+# source project = command (--project)
+# source server = default (built-in)
+# source timeout = environment (VEX_TIMEOUT)
+# source token_file = default (built-in)
+# source url = command (--url)
+server = ''
+default_server = ''
+url = 'http://127.0.0.1:8791'
+token_file = ''
+project = 'example-mod'
+timeout = '2m'

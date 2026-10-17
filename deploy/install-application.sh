@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-set -euo pipefail
-umask 077
-[[ $(hostname) == encore ]]
+source "$(dirname "$0")/common.sh"
+require_linux
 [[ $# == 2 ]]
 mode=$1
 candidate=$2
 [[ "$mode" == prepare || "$mode" == deploy ]]
-[[ "$candidate" == /nix/store/*-chorus-applications ]]
-project=$(cd "$(dirname "$0")/.." && pwd)
+[[ "$candidate" == /nix/store/*-vex-applications ]]
 [[ $(cat "$project/.work/application/candidate") == "$candidate" ]]
-for program in chorusd chorusctl chorus-world-scanner; do
+for program in vexd vex vex-world-scanner; do
   test -x "$candidate/bin/$program"
 done
-sudo -n true
-exec 9</srv/chorus-build.lock
+sudo -n -u vexd "$candidate/bin/vexd" config check --config "$configuration"
+exec 9<"$build_lock"
 flock --exclusive --nonblock 9
-if [[ "$mode" == deploy ]]; then
-  systemctl show chorusd --property=ExecStart --value | rg -F '/nix/var/nix/profiles/chorus/bin/chorusd' >/dev/null
+require_idle_workers
+if [[ "$mode" == prepare ]] && systemctl is-active --quiet vexd; then
+  printf '%s\n' 'Use deploy mode to update an active Vex service' >&2
+  exit 1
 fi
-sudo -n nix-env --profile /nix/var/nix/profiles/chorus --set "$candidate"
-[[ $(readlink -f /nix/var/nix/profiles/chorus) == "$candidate" ]]
 if [[ "$mode" == deploy ]]; then
-  sudo -n systemctl restart chorusd
-  systemctl is-active --quiet chorusd
-  [[ $(curl --silent --show-error --retry 5 --retry-connrefused --retry-delay 1 --connect-timeout 3 --max-time 10 --output /dev/null --write-out '%{http_code}' http://10.1.2.137:8790/v1/health) == 401 ]]
-  sudo -n -u chorusd "$candidate/bin/chorusctl" --url http://10.1.2.137:8790 --users-file /var/lib/chorusd/secrets/users.toml health
+  systemctl show vexd --property=ExecStart --value | rg -F "$application_profile/bin/vexd" >/dev/null
+  sudo -n systemctl stop vexd
+  [[ $(systemctl is-active vexd) == inactive ]]
+  require_idle_workers
+fi
+sudo -n nix-env --profile "$application_profile" --set "$candidate"
+[[ $(readlink -f "$application_profile") == "$candidate" ]]
+if [[ "$mode" == deploy ]]; then
+  sudo -n systemctl start vexd
+  systemctl is-active --quiet vexd
+  check_api
 fi
 printf 'application profile installed: %s\n' "$candidate"

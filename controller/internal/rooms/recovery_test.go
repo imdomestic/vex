@@ -3,15 +3,15 @@ package rooms
 import (
 	"testing"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/kube"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/runtime"
 )
 
 func TestLostRecoveryPreservesIdentityAndStopIntent(t *testing.T) {
 	room := model.Room{State: "lost", Label: "testing", Generation: 4, BuildID: "fabric-fc16eaac252b"}
-	status := kube.RoomStatus{PodExists: true, Ready: true, Generation: 4, BuildID: room.BuildID}
+	status := runtime.RoomStatus{ProcessExists: true, Ready: true, Generation: 4, BuildID: room.BuildID}
 	if lostRecoveryState(room, Runtime{}, status) != "starting" {
-		t.Fatal("matching ready Pod must be reverified")
+		t.Fatal("matching ready process must be reverified")
 	}
 	for _, previous := range []string{"stopping", "archiving"} {
 		if lostRecoveryState(room, Runtime{LostFrom: previous}, status) != "stopping" {
@@ -35,9 +35,9 @@ func TestLostRecoveryPreservesIdentityAndStopIntent(t *testing.T) {
 	status.BuildID = room.BuildID
 	status.Ready = false
 	if lostRecoveryState(room, Runtime{}, status) != "stopping" {
-		t.Fatal("unready Pod was resumed")
+		t.Fatal("unready process was resumed")
 	}
-	if lostRecoveryState(room, Runtime{}, kube.RoomStatus{}) != "stopping" {
-		t.Fatal("missing Pod was resumed")
+	if lostRecoveryState(room, Runtime{}, runtime.RoomStatus{}) != "stopping" {
+		t.Fatal("missing process was resumed")
 	}
 }

@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/assets"
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func realArchiveWorld(t *testing.T, source, destination string) {
@@ -130,7 +130,12 @@ func copyArchiveFile(t *testing.T, source, destination string) {
 
 func remoteArchiveSize(ctx context.Context, m *Manager, host, filename string) (int64, error) {
 	command := "if test -f " + shellQuote(filename) + "; then stat -c %s -- " + shellQuote(filename) + "; else printf '0\\n'; fi"
-	output, err := exec.CommandContext(ctx, "ssh", append(m.sshArgs(host), command)...).Output()
+	storage, ok := m.Storage.(SSHStore)
+	if !ok {
+		return 0, fmt.Errorf("partial transmission requires rsync-ssh storage")
+	}
+	arguments := append(storage.sshOptions(), host, command)
+	output, err := exec.CommandContext(ctx, "ssh", arguments...).Output()
 	if err != nil {
 		return 0, err
 	}
@@ -172,27 +177,58 @@ func awaitArchiveSignal(t *testing.T, ctx context.Context, filename string) {
 	}
 }
 
-func TestRealTankInterruptedTransferSnapshotAndAssetRecovery(t *testing.T) {
-	world, scanner, sourceSHA := os.Getenv("CHORUS_IT_WORLD"), os.Getenv("CHORUS_IT_SCANNER"), os.Getenv("CHORUS_IT_SOURCE_SHA")
-	tank, identity, knownHosts := os.Getenv("CHORUS_IT_TANK"), os.Getenv("CHORUS_IT_IDENTITY"), os.Getenv("CHORUS_IT_KNOWN_HOSTS")
-	work := os.Getenv("CHORUS_IT_ARCHIVE_WORK")
-	signals := os.Getenv("CHORUS_IT_TAILSCALE_SIGNALS")
-	if world == "" || scanner == "" || sourceSHA == "" || tank == "" || identity == "" || knownHosts == "" || work == "" {
-		t.Skip("requires explicit real world, scanner, SSH identity, tank test target and work directory")
-	}
-	host, remoteRoot, err := target(tank)
+type archiveDatabase struct {
+	*store.Store
+	owner *store.Store
+}
+
+func (db *archiveDatabase) Close() error { return db.owner.Close() }
+
+func openArchiveDatabase(filename, project string) (*archiveDatabase, error) {
+	owner, err := store.Open(filename)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	if !strings.HasPrefix(remoteRoot, "/srv/archive/chorus/it-") || strings.Contains(strings.TrimPrefix(remoteRoot, "/srv/archive/chorus/it-"), "/") {
-		t.Fatal("tank destination must be an isolated it directory")
+	db, err := owner.WithProject(project)
+	if err != nil {
+		owner.Close()
+		return nil, err
 	}
-	if !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/p6-") {
-		t.Fatal("integration files must remain in a project .work/p6 directory")
+	return &archiveDatabase{Store: db, owner: owner}, nil
+}
+
+func TestRealLocalSnapshotAndWorldRecovery(t *testing.T) {
+	realArchiveLifecycle(t, false)
+}
+
+func TestRealTankInterruptedTransferSnapshotAndWorldRecovery(t *testing.T) {
+	realArchiveLifecycle(t, true)
+}
+
+func realArchiveLifecycle(t *testing.T, remote bool) {
+	t.Helper()
+	world, scanner, sourceSHA := os.Getenv("VEX_IT_WORLD"), os.Getenv("VEX_IT_SCANNER"), os.Getenv("VEX_IT_SOURCE_SHA")
+	tank, identity, knownHosts := os.Getenv("VEX_IT_TANK"), os.Getenv("VEX_IT_IDENTITY"), os.Getenv("VEX_IT_KNOWN_HOSTS")
+	work, signals := os.Getenv("VEX_IT_WORK"), os.Getenv("VEX_IT_TAILSCALE_SIGNALS")
+	if world == "" || scanner == "" || sourceSHA == "" || work == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
+		t.Skip("requires a real world, scanner, source SHA, ignored workspace and selected archive backend")
+	}
+	if len(sourceSHA) != 40 || !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
+		t.Fatal("integration requires an actual source commit and absolute ignored workspace")
+	}
+	var host, remoteRoot string
+	var err error
+	if remote {
+		host, remoteRoot, err = target(tank)
+		if err != nil || !strings.HasPrefix(remoteRoot, "/srv/archive/vex/it-") || strings.Contains(strings.TrimPrefix(remoteRoot, "/srv/archive/vex/it-"), "/") {
+			t.Fatal("tank destination must be an isolated Vex it directory", err)
+		}
+	} else if signals != "" {
+		t.Fatal("network interruption signals require rsync-ssh storage")
 	}
 	if signals != "" {
-		if !filepath.IsAbs(signals) || !strings.Contains(filepath.Clean(signals), "/.work/p6-tailscale/") {
-			t.Fatal("network signals must remain in a project .work/p6-tailscale run directory")
+		if !filepath.IsAbs(signals) || !strings.Contains(filepath.Clean(signals), "/.work/") {
+			t.Fatal("network signals must remain in an ignored integration run directory")
 		}
 		if err = os.MkdirAll(signals, 0700); err != nil {
 			t.Fatal(err)
@@ -208,7 +244,10 @@ func TestRealTankInterruptedTransferSnapshotAndAssetRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("preserved test files: local=%s tank=%s", root, tank)
+	t.Logf("preserved test files: local=%s", root)
+	if remote {
+		t.Logf("dedicated remote archive: %s", tank)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	if err = worldarchive.Space(root); err != nil {
@@ -220,15 +259,18 @@ func TestRealTankInterruptedTransferSnapshotAndAssetRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if size < 512*1024 {
+	if remote && size < 512*1024 {
 		t.Fatal("real world is too small to observe interrupted transmission")
 	}
-	cfg := config.Config{Server: config.Server{DataDir: filepath.Join(root, "data")}, Minecraft: config.Minecraft{Version: "26.3"}, Assets: config.Assets{WorldScanner: scanner}, Archive: config.Archive{Enabled: true, TankTarget: tank, TankBWLimit: "64K", IdentityFile: identity, KnownHostsFile: knownHosts, KeepPerRoom: 0, KeepDays: 0}}
-	if err = os.MkdirAll(filepath.Join(cfg.Server.DataDir, ".work"), 0700); err != nil {
+	cfg := config.ProjectConfig{ID: "archive-test", DataDir: filepath.Join(root, "data", "projects", "archive-test"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: "26.3"}}, Loaders: map[string]config.Loader{"fabric": {Enabled: true}}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}, Archive: config.EffectiveArchive{Archive: config.Archive{Backend: "local", Local: config.LocalArchive{Directory: filepath.Join(root, "archive")}}}}
+	if remote {
+		cfg.Archive.Archive = config.Archive{Backend: "rsync-ssh", RsyncSSH: config.RsyncSSH{Target: tank, BWLimit: "64K", IdentityFile: identity, KnownHostsFile: knownHosts}}
+	}
+	if err = os.MkdirAll(filepath.Join(cfg.DataDir, ".work"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	database := filepath.Join(root, "state.db")
-	db, err := store.Open(database)
+	db, err := openArchiveDatabase(database, cfg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,17 +279,18 @@ func TestRealTankInterruptedTransferSnapshotAndAssetRecovery(t *testing.T) {
 			db.Close()
 		}
 	}()
-	m, err := New(cfg, db)
+	m, err := New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	snapshot := model.Snapshot{ID: "plaza-capture", RoomID: "plaza-it", RoomGeneration: 1, BuildID: "fabric-" + sourceSHA[:12], Minecraft: "26.3", CapturedAt: now, CreatedAt: now, SHA256: digest, Size: size, LocalAvailable: true}
+	snapshot := model.Snapshot{Project: cfg.ID, ID: "plaza-capture", RoomID: "plaza-it", RoomGeneration: 1, BuildID: "fabric-" + sourceSHA[:12], Minecraft: "26.3", CapturedAt: now, CreatedAt: now, SHA256: digest, Size: size, LocalAvailable: true}
 	relative := path.Join("snapshots", snapshot.RoomID, snapshot.ID+".tar.gz")
-	local := filepath.Join(cfg.Server.DataDir, filepath.FromSlash(relative))
+	snapshot.Path = relative
+	local := filepath.Join(cfg.DataDir, filepath.FromSlash(relative))
 	copyArchiveFile(t, source, local)
 	err = db.Update(ctx, func(tx *store.Tx) error {
-		if err := QueueSnapshot(ctx, tx, cfg.Server.DataDir, snapshot); err != nil {
+		if err := QueueSnapshot(ctx, tx, cfg.DataDir, snapshot); err != nil {
 			return err
 		}
 		return tx.Put(ctx, "snapshot", snapshot.ID, snapshot)
@@ -261,135 +304,131 @@ func TestRealTankInterruptedTransferSnapshotAndAssetRecovery(t *testing.T) {
 	if _, err = os.Stat(local); err != nil {
 		t.Fatal("unverified snapshot was evicted", err)
 	}
-	disabled := cfg
-	disabled.Archive.Enabled = false
-	disabledManager, err := New(disabled, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = disabledManager.Step(ctx); err != nil {
-		t.Fatal(err)
-	}
 	var queued model.Transfer
 	worldID := model.TransferID("snapshot", snapshot.ID, "", "world")
 	if err = db.Get(ctx, "transfer", worldID, &queued); err != nil || queued.Status != "queued" || queued.Attempt != 0 {
-		t.Fatalf("disabled archive changed queue: %+v %v", queued, err)
+		t.Fatalf("archive queue was not persisted: %+v %v", queued, err)
 	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err = store.Open(database)
+	db, err = openArchiveDatabase(database, cfg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = New(cfg, db)
+	m, err = New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Get(ctx, "transfer", worldID, &queued); err != nil || queued.Status != "queued" {
 		t.Fatal("queued transfer did not survive SQLite reopen", err)
 	}
-	transferCtx, stopTransfer := context.WithCancel(ctx)
-	defer stopTransfer()
-	finished := make(chan error, 1)
-	go func() { finished <- m.Step(transferCtx) }()
-	remoteWorld := path.Join(remoteRoot, relative)
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	var partial int64
-observeTransfer:
-	for {
+	expectedAttempt := 1
+	if remote {
+		expectedAttempt = 2
+		transferCtx, stopTransfer := context.WithCancel(ctx)
+		defer stopTransfer()
+		finished := make(chan error, 1)
+		go func() { finished <- m.Step(transferCtx) }()
+		remoteWorld := path.Join(remoteRoot, "projects", cfg.ID, relative)
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		var partial int64
+	observeTransfer:
+		for {
+			select {
+			case err = <-finished:
+				t.Fatalf("transfer completed before interruption: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-ticker.C:
+				partial, err = remoteArchiveSize(ctx, m, host, remoteWorld)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if partial > 0 && partial < size {
+					if signals == "" {
+						stopTransfer()
+					} else {
+						publishArchiveSignal(t, signals, "transfer-ready.json", map[string]any{"partial": partial, "total": size, "tankRoot": remoteRoot, "transferID": worldID})
+						t.Logf("actual partial transfer observed; external Tailscale interruption may proceed: %s", signals)
+					}
+					break observeTransfer
+				}
+			}
+		}
+		if err = <-finished; err == nil {
+			t.Fatal("interrupted transfer reported success")
+		}
+		if err = db.Get(ctx, "transfer", worldID, &queued); err != nil {
+			t.Fatal(err)
+		}
+		if queued.Status != "failed" || queued.Attempt != 1 || queued.VerifiedAt != nil || queued.LastError == nil {
+			t.Fatalf("interruption was not persisted: %+v", queued)
+		}
+		if err = m.evictSnapshots(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = os.Stat(local); err != nil {
+			t.Fatal("interrupted snapshot was evicted", err)
+		}
+		if signals != "" {
+			if transferCtx.Err() != nil {
+				t.Fatal("external network test must fail through the actual SSH transport", transferCtx.Err())
+			}
+			publishArchiveSignal(t, signals, "transfer-failed.json", map[string]any{"status": queued.Status, "attempt": queued.Attempt, "verifiedAt": queued.VerifiedAt, "localAvailable": true})
+			awaitArchiveSignal(t, ctx, filepath.Join(signals, "restored"))
+		}
+		partial, err = remoteArchiveSize(ctx, m, host, remoteWorld)
+		if err != nil || partial <= 0 || partial >= size {
+			t.Fatalf("partial file was not retained: %d/%d %v", partial, size, err)
+		}
+		if signals == "" {
+			t.Logf("cancelled only test transfer: retained partial=%d total=%d attempt=%d", partial, size, queued.Attempt)
+		} else {
+			t.Logf("actual Tailscale interruption persisted failure; restored network retained partial=%d total=%d attempt=%d", partial, size, queued.Attempt)
+		}
+		if err = db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err = openArchiveDatabase(database, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Archive.RsyncSSH.BWLimit = "16M"
+		m, err = New(cfg, db.Store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var persisted model.Transfer
+		if err = db.Get(ctx, "transfer", worldID, &persisted); err != nil || persisted.Status != "failed" || persisted.Attempt != 1 {
+			t.Fatal("failed transfer did not survive SQLite reopen", err)
+		}
+		retry := time.NewTimer(time.Until(queued.UpdatedAt.Add(time.Minute + time.Millisecond)))
+		defer retry.Stop()
 		select {
-		case err = <-finished:
-			t.Fatalf("transfer completed before interruption: %v", err)
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
-		case <-ticker.C:
-			partial, err = remoteArchiveSize(ctx, m, host, remoteWorld)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if partial > 0 && partial < size {
-				if signals == "" {
-					stopTransfer()
-				} else {
-					publishArchiveSignal(t, signals, "transfer-ready.json", map[string]any{"partial": partial, "total": size, "tankRoot": remoteRoot, "transferID": worldID})
-					t.Logf("actual partial transfer observed; external Tailscale interruption may proceed: %s", signals)
-				}
-				break observeTransfer
-			}
+		case <-retry.C:
 		}
-	}
-	if err = <-finished; err == nil {
-		t.Fatal("interrupted transfer reported success")
-	}
-	if err = db.Get(ctx, "transfer", worldID, &queued); err != nil {
-		t.Fatal(err)
-	}
-	if queued.Status != "failed" || queued.Attempt != 1 || queued.VerifiedAt != nil || queued.LastError == nil {
-		t.Fatalf("interruption was not persisted: %+v", queued)
-	}
-	if err = m.evictSnapshots(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = os.Stat(local); err != nil {
-		t.Fatal("interrupted snapshot was evicted", err)
-	}
-	if signals != "" {
-		if transferCtx.Err() != nil {
-			t.Fatal("external network test must fail through the actual SSH transport", transferCtx.Err())
-		}
-		publishArchiveSignal(t, signals, "transfer-failed.json", map[string]any{"status": queued.Status, "attempt": queued.Attempt, "verifiedAt": queued.VerifiedAt, "localAvailable": true})
-		awaitArchiveSignal(t, ctx, filepath.Join(signals, "restored"))
-	}
-	partial, err = remoteArchiveSize(ctx, m, host, remoteWorld)
-	if err != nil || partial <= 0 || partial >= size {
-		t.Fatalf("partial file was not retained: %d/%d %v", partial, size, err)
-	}
-	if signals == "" {
-		t.Logf("cancelled only test transfer: retained partial=%d total=%d attempt=%d", partial, size, queued.Attempt)
-	} else {
-		t.Logf("actual Tailscale interruption persisted failure; restored network retained partial=%d total=%d attempt=%d", partial, size, queued.Attempt)
-	}
-	if err = db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = store.Open(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Archive.TankBWLimit = "16M"
-	m, err = New(cfg, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var persisted model.Transfer
-	if err = db.Get(ctx, "transfer", worldID, &persisted); err != nil || persisted.Status != "failed" || persisted.Attempt != 1 {
-		t.Fatal("failed transfer did not survive SQLite reopen", err)
-	}
-	retry := time.NewTimer(time.Until(queued.UpdatedAt.Add(time.Minute + time.Millisecond)))
-	defer retry.Stop()
-	select {
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	case <-retry.C:
 	}
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
+	var persisted model.Transfer
 	if err = db.Get(ctx, "transfer", worldID, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Status != "verified" || persisted.Attempt != 2 || persisted.VerifiedAt == nil {
+	if persisted.Status != "verified" || persisted.Attempt != expectedAttempt || persisted.VerifiedAt == nil {
 		t.Fatalf("resume failed: %+v", persisted)
 	}
-	if err = m.checkRemote(ctx, host, remoteWorld, digest, size); err != nil {
+	if err = m.Storage.Verify(ctx, persisted.RemotePath, digest, size); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.checkRemote(ctx, host, remoteWorld, strings.Repeat("0", 64), size); err == nil {
+	if err = m.Storage.Verify(ctx, persisted.RemotePath, strings.Repeat("0", 64), size); err == nil {
 		t.Fatal("incorrect remote checksum accepted")
 	}
-	if err = m.checkRemote(ctx, host, remoteWorld, digest, size+1); err == nil {
+	if err = m.Storage.Verify(ctx, persisted.RemotePath, digest, size+1); err == nil {
 		t.Fatal("incorrect remote size accepted")
 	}
 	if err = db.Get(ctx, "snapshot", snapshot.ID, &snapshot); err != nil {
@@ -402,7 +441,7 @@ observeTransfer:
 		t.Fatalf("expired verified snapshot remains local: %v", err)
 	}
 	cfg.Archive.KeepPerRoom, cfg.Archive.KeepDays = 5, 14
-	m, err = New(cfg, db)
+	m, err = New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,11 +456,11 @@ observeTransfer:
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err = store.Open(database)
+	db, err = openArchiveDatabase(database, cfg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = New(cfg, db)
+	m, err = New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,37 +477,37 @@ observeTransfer:
 	if err != nil || actual != digest || actualSize != size {
 		t.Fatal("restored snapshot changed", err)
 	}
-	t.Logf("snapshot resumed and verified; actual SQLite reopen, remote checksum/size, retention and restore passed")
-	assetManager, err := assets.New(cfg, db)
+	t.Logf("snapshot archive verified; actual SQLite reopen, archive checksum/size, retention and restore passed")
+	worldManager, err := worlds.New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.Assets = assetManager
-	metadata := model.AssetMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: sourceSHA, Scale: 1}}
-	revision, created, err := assetManager.Publish(ctx, metadata, source)
+	m.Worlds = worldManager
+	metadata := model.WorldMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: sourceSHA, Scale: 1}}
+	revision, created, err := worldManager.Publish(ctx, metadata, source)
 	if err != nil || !created || revision.Rev != "1" {
-		t.Fatalf("real asset publish: %+v %t %v", revision, created, err)
+		t.Fatalf("real world publish: %+v %t %v", revision, created, err)
 	}
-	_, _, err = assetManager.SetState(ctx, "plaza", "archived")
+	_, _, err = worldManager.SetState(ctx, "plaza", "archived")
 	var failure *model.Error
 	if !errors.As(err, &failure) || failure.Code != "archive_failed" {
-		t.Fatalf("unverified asset archive accepted: %v", err)
+		t.Fatalf("unverified world archive accepted: %v", err)
 	}
-	if err = assetManager.EvictArchived(ctx); err != nil {
+	if err = worldManager.EvictArchived(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assetLocal := filepath.Join(cfg.Server.DataDir, assets.WorldPath("plaza", "1"))
-	if _, err = os.Stat(assetLocal); err != nil {
-		t.Fatal("unverified asset was evicted", err)
+	worldLocal := filepath.Join(cfg.DataDir, worlds.WorldPath("plaza", "1"))
+	if _, err = os.Stat(worldLocal); err != nil {
+		t.Fatal("unverified world was evicted", err)
 	}
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	archived, _, err := assetManager.SetState(ctx, "plaza", "archived")
+	archived, _, err := worldManager.SetState(ctx, "plaza", "archived")
 	if err != nil || archived.State != "archived" {
-		t.Fatalf("verified asset archive: %+v %v", archived, err)
+		t.Fatalf("verified world archive: %+v %v", archived, err)
 	}
-	opened, err := assetManager.OpenWorld(ctx, "plaza", "1")
+	opened, err := worldManager.OpenWorld(ctx, "plaza", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,47 +515,47 @@ observeTransfer:
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = os.Stat(assetLocal); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("verified archived asset not evicted: %v", err)
+	if _, err = os.Stat(worldLocal); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified archived world not evicted: %v", err)
 	}
 	hash := sha256.New()
 	count, err := io.Copy(hash, opened)
 	if err != nil || count != size || hex.EncodeToString(hash.Sum(nil)) != digest {
-		t.Fatal("open asset download lost bytes during local eviction", err)
+		t.Fatal("open world download lost bytes during local eviction", err)
 	}
-	requested, accepted, err := assetManager.RequestRestore(ctx, "plaza")
+	requested, accepted, err := worldManager.RequestRestore(ctx, "plaza")
 	if err != nil || !accepted || requested.State != "archived" || requested.Restore.Attempt != 1 {
-		t.Fatalf("asset restore request: %+v %t %v", requested, accepted, err)
+		t.Fatalf("world restore request: %+v %t %v", requested, accepted, err)
 	}
-	requested, accepted, err = assetManager.RequestRestore(ctx, "plaza")
+	requested, accepted, err = worldManager.RequestRestore(ctx, "plaza")
 	if err != nil || !accepted || requested.Restore.Attempt != 1 {
-		t.Fatal("asset restore attempt was duplicated", err)
+		t.Fatal("world restore attempt was duplicated", err)
 	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err = store.Open(database)
+	db, err = openArchiveDatabase(database, cfg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = New(cfg, db)
+	m, err = New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.Assets, err = assets.New(cfg, db)
+	m.Worlds, err = worlds.New(cfg, db.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	active, err := m.Assets.Get(ctx, "plaza")
+	active, err := m.Worlds.Get(ctx, "plaza")
 	if err != nil || active.State != "active" || active.Restore.Status != "succeeded" || active.Restore.Attempt != 1 {
-		t.Fatalf("asset restore: %+v %v", active, err)
+		t.Fatalf("world restore: %+v %v", active, err)
 	}
-	actual, actualSize, err = worldarchive.Digest(assetLocal)
+	actual, actualSize, err = worldarchive.Digest(worldLocal)
 	if err != nil || actual != digest || actualSize != size {
-		t.Fatal("restored asset differs from published content", err)
+		t.Fatal("restored world differs from published content", err)
 	}
 	transfers, err := store.All[model.Transfer](ctx, db, "transfer")
 	if err != nil || len(transfers) != 4 {
@@ -526,13 +565,13 @@ observeTransfer:
 		if task.Status != "verified" || task.VerifiedAt == nil {
 			t.Fatalf("task is not verified: %+v", task)
 		}
-		if err = m.checkRemote(ctx, host, path.Join(remoteRoot, task.RemotePath), task.SHA256, task.Size); err != nil {
+		if err = m.Storage.Verify(ctx, task.RemotePath, task.SHA256, task.Size); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("preserved tank file: %s/%s sha256=%s bytes=%d", tank, task.RemotePath, task.SHA256, task.Size)
+		t.Logf("preserved archive object: backend=%s key=%s sha256=%s bytes=%d", cfg.Archive.Backend, task.RemotePath, task.SHA256, task.Size)
 	}
 	if _, err = os.Stat(filepath.Join(world, "level.dat")); err != nil {
 		t.Fatal("source world changed", err)
 	}
-	t.Log("real asset publish, verified archive, open download, local eviction and persisted restore passed; production configuration unchanged")
+	t.Log("real world publish, verified archive, open download, local eviction and persisted restore passed")
 }

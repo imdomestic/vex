@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
 )
 
 func TestClosedRoomRetentionAndPermanentGeneration(t *testing.T) {
@@ -18,18 +19,22 @@ func TestClosedRoomRetentionAndPermanentGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	m := &Manager{DB: db}
+	db, err = db.WithProject("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Cfg: config.ProjectConfig{ID: "test"}, DB: db}
 	now := time.Now().UTC()
 	old, recent := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour)
 	for _, item := range []struct {
 		id, kind string
 		closed   time.Time
 	}{
-		{"expired", "commit", old}, {"asset", "asset", old}, {"recent", "commit", recent},
+		{"expired", "commit", old}, {"world-room", "world", old}, {"recent", "commit", recent},
 		{"branch", "branch", old}, {"retained", "commit", old}, {"seed-source", "commit", old},
 		{"world", "commit", old},
 	} {
-		room := model.Room{ID: item.id, Kind: item.kind, SHA: "0123456789012345678901234567890123456789", Loader: "fabric", State: "closed", Generation: 7, ClosedAt: &item.closed}
+		room := model.Room{Project: "test", ID: item.id, Kind: item.kind, SHA: "0123456789012345678901234567890123456789", Loader: "fabric", State: "closed", Generation: 7, ClosedAt: &item.closed}
 		if err = db.Put(ctx, "room", room.ID, room); err != nil {
 			t.Fatal(err)
 		}
@@ -46,7 +51,7 @@ func TestClosedRoomRetentionAndPermanentGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	active := model.Room{ID: "running", Kind: "commit", State: "ready", SeedResolved: &model.SeedResolved{Kind: "snapshot", ID: "seed-source-g7"}}
+	active := model.Room{Project: "test", ID: "running", Kind: "commit", State: "ready", SeedResolved: &model.SeedResolved{Kind: "snapshot", ID: "seed-source-g7"}}
 	if err = db.Put(ctx, "room", active.ID, active); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +62,7 @@ func TestClosedRoomRetentionAndPermanentGeneration(t *testing.T) {
 	if err = m.PruneClosed(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"expired", "asset"} {
+	for _, id := range []string{"expired", "world-room"} {
 		for _, kind := range []string{"room", "room_runtime"} {
 			var value any
 			if err = db.Get(ctx, kind, id, &value); !errors.Is(err, store.ErrNotFound) {
@@ -77,7 +82,7 @@ func TestClosedRoomRetentionAndPermanentGeneration(t *testing.T) {
 	if err = db.Get(ctx, "snapshot", "expired-g7", &value); err != nil {
 		t.Fatal("room cleanup changed snapshot metadata", err)
 	}
-	room := model.Room{ID: "expired", Kind: "commit", SHA: "0123456789012345678901234567890123456789", Loader: "fabric"}
+	room := model.Room{Project: "test", ID: "expired", Kind: "commit", SHA: "0123456789012345678901234567890123456789", Loader: "fabric"}
 	if err = m.restoreGeneration(ctx, &room); err != nil || room.Generation != 7 {
 		t.Fatal("generation was not recovered from permanent tombstone", err)
 	}
@@ -107,9 +112,13 @@ func TestClosedAtMigrationAndStateTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	m := &Manager{DB: db}
+	db, err = db.WithProject("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Cfg: config.ProjectConfig{ID: "test"}, DB: db}
 	old := time.Now().UTC().Add(-48 * time.Hour)
-	room := model.Room{ID: "history", State: "closed", UpdatedAt: old}
+	room := model.Room{Project: "test", ID: "history", State: "closed", UpdatedAt: old}
 	if err = db.Put(ctx, "room", room.ID, room); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +129,7 @@ func TestClosedAtMigrationAndStateTransitions(t *testing.T) {
 	if err != nil || room.ClosedAt == nil || !room.ClosedAt.Equal(old) || !room.UpdatedAt.Equal(old) {
 		t.Fatal("historical close time changed during migration", err)
 	}
-	room.Host = "history.chorus.internal"
+	room.Host = "history--test.vex.internal"
 	if err = m.save(ctx, room, Runtime{}); err != nil {
 		t.Fatal(err)
 	}

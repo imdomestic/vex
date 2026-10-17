@@ -1,0 +1,115 @@
+[server]
+name = "Vex server"
+listen = ["127.0.0.1:8790"]
+public_base_url = "http://127.0.0.1:8790"
+internal_base_url = "http://127.0.0.1:8790"
+data_dir = "/var/lib/vex"
+zone = "vex.internal"
+router_address = "127.0.0.1:25565"
+
+[minecraft]
+accept_eula = false
+
+[runtime]
+backend = "kubernetes"
+
+[runtime.kubernetes]
+namespace_prefix = "vex-p-"
+system_namespace = "vex-system"
+kubeconfig_file = "/var/lib/vex/kubeconfig"
+storage_class = "local-path"
+webhook_sources = ["10.42.0.0/16"]
+
+[runtime.kubernetes.nodes.worker]
+k8s_name = "worker"
+roles = ["persistent", "ephemeral", "build"]
+priority = 10
+max_rooms = 2
+
+[runtimes.java25]
+server_image = "itzg/minecraft-server:java25@sha256:7462fe34a56686719463ff898a674c1a1ce802988138d2bfdeff2507fb1644e8"
+jdk_home = "/run/current-system/sw"
+
+[agents.fabric-26-3]
+minecraft = "26.3"
+loader = "fabric"
+version = "1.0.0"
+file = "/var/lib/vex/agents/vex-agent-26.3-1.0.0.jar"
+
+[archive]
+backend = "local"
+
+[archive.local]
+directory = "/var/lib/vex/archive"
+
+[auth]
+signing_key_file = "/var/lib/vex/secrets/signing.key"
+session_ttl = "2160h"
+invite_ttl = "24h"
+admin_socket = "/run/vex/admin.sock"
+
+[users.operator]
+admin = true
+identities = ["static:operator"]
+minecraft = []
+# 配置自行生成的 token 的 SHA256 后，static 登录才会启用。
+token_sha256 = ""
+
+[projects.example]
+remote = "https://github.com/imdomestic/vex-example-fabric.git"
+default_branch = "main"
+trust = "trusted"
+whitelist = []
+
+[projects.example.minecraft]
+version = "26.3"
+java = 25
+
+[projects.example.git]
+poll_interval = "60s"
+
+[projects.example.build]
+source = "host"
+timeout = "20m"
+gradle_args = []
+
+[projects.example.loaders.fabric]
+enabled = true
+gradle_task = "build"
+artifact_glob = "build/libs/*.jar"
+artifact_exclude = ["*-sources.jar", "*-dev*.jar", "*-javadoc.jar"]
+loader_version_property = "fabric_loader_version"
+agent = "fabric-26-3"
+
+[[projects.example.loaders.fabric.deps]]
+name = "fabric-api"
+url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/${fabric_version}/fabric-api-${fabric_version}.jar"
+side = "both"
+
+[projects.example.members]
+operator = "owner"
+
+[projects.example.quota]
+max_rooms = 2
+room_memory_max = "5Gi"
+build_cache = 20
+snapshot_keep = 5
+snapshot_keep_days = 14
+
+[build]
+max_concurrent = 1
+lock_file = "/var/lib/vex/build.lock"
+
+[rooms]
+heap = "4G"
+join_lease = "3m"
+start_timeout = "5m"
+default_seed = "empty"
+
+[rooms.idle]
+branch = "10m"
+commit = "10m"
+world = "10m"
+
+[worlds]
+scanner_file = "/nix/var/nix/profiles/vex/bin/vex-world-scanner"

@@ -2,56 +2,139 @@ package config
 
 import (
 	"fmt"
-	"net"
-	"net/url"
-	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
-
-	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	Path      string            `toml:"-"`
-	Server    Server            `toml:"server"`
-	Auth      Auth              `toml:"auth"`
-	Git       Git               `toml:"git"`
-	Minecraft Minecraft         `toml:"minecraft"`
-	Loaders   map[string]Loader `toml:"loaders"`
-	Build     Build             `toml:"build"`
-	Rooms     Rooms             `toml:"rooms"`
-	Archive   Archive           `toml:"archive"`
-	Assets    Assets            `toml:"assets"`
+	Path      string                 `toml:"-"`
+	Server    Server                 `toml:"server"`
+	Minecraft Minecraft              `toml:"minecraft"`
+	Runtime   Runtime                `toml:"runtime"`
+	Runtimes  map[string]JavaRuntime `toml:"runtimes"`
+	Agents    map[string]Agent       `toml:"agents"`
+	Archive   Archive                `toml:"archive"`
+	Auth      Auth                   `toml:"auth"`
+	Users     map[string]User        `toml:"users"`
+	Projects  map[string]Project     `toml:"projects"`
+	Build     Build                  `toml:"build"`
+	Rooms     Rooms                  `toml:"rooms"`
+	Worlds    Worlds                 `toml:"worlds"`
 }
 
 type Server struct {
+	Name            string   `toml:"name"`
 	Listen          []string `toml:"listen"`
 	PublicBaseURL   string   `toml:"public_base_url"`
 	InternalBaseURL string   `toml:"internal_base_url"`
 	DataDir         string   `toml:"data_dir"`
-}
-
-type Auth struct {
-	UsersFile      string `toml:"users_file"`
-	SigningKeyFile string `toml:"signing_key_file"`
-}
-
-type Git struct {
-	Remote        string `toml:"remote"`
-	PollInterval  string `toml:"poll_interval"`
-	DefaultBranch string `toml:"default_branch"`
+	Zone            string   `toml:"zone"`
+	RouterAddress   string   `toml:"router_address"`
 }
 
 type Minecraft struct {
-	Version       string   `toml:"version"`
-	Java          int      `toml:"java"`
-	Zone          string   `toml:"zone"`
-	Image         string   `toml:"image"`
-	Whitelist     []string `toml:"whitelist"`
-	HankWhitelist []string `toml:"hank_whitelist"`
+	AcceptEULA bool `toml:"accept_eula"`
+}
+type Target struct {
+	Version string `toml:"version"`
+	Java    int    `toml:"java"`
+}
+type Runtime struct {
+	Backend    string     `toml:"backend"`
+	Kubernetes Kubernetes `toml:"kubernetes"`
+}
+type Kubernetes struct {
+	NamespacePrefix string          `toml:"namespace_prefix"`
+	SystemNamespace string          `toml:"system_namespace"`
+	KubeconfigFile  string          `toml:"kubeconfig_file"`
+	StorageClass    string          `toml:"storage_class"`
+	WebhookSources  []string        `toml:"webhook_sources"`
+	Nodes           map[string]Node `toml:"nodes"`
+}
+type Node struct {
+	K8sName  string   `toml:"k8s_name"`
+	Roles    []string `toml:"roles"`
+	Priority int      `toml:"priority"`
+	MaxRooms int      `toml:"max_rooms"`
+}
+type JavaRuntime struct {
+	ServerImage string `toml:"server_image"`
+	BuildImage  string `toml:"build_image"`
+	JDKHome     string `toml:"jdk_home"`
+}
+type Agent struct {
+	Minecraft string `toml:"minecraft"`
+	Loader    string `toml:"loader"`
+	Version   string `toml:"version"`
+	File      string `toml:"file"`
+}
+type Archive struct {
+	Backend  string       `toml:"backend"`
+	Local    LocalArchive `toml:"local"`
+	RsyncSSH RsyncSSH     `toml:"rsync_ssh"`
+}
+type LocalArchive struct {
+	Directory string `toml:"directory"`
+}
+type RsyncSSH struct {
+	Target         string `toml:"target"`
+	IdentityFile   string `toml:"identity_file"`
+	KnownHostsFile string `toml:"known_hosts_file"`
+	BWLimit        string `toml:"bwlimit"`
+}
+type Auth struct {
+	SigningKeyFile string `toml:"signing_key_file"`
+	SessionTTL     string `toml:"session_ttl"`
+	InviteTTL      string `toml:"invite_ttl"`
+	AdminSocket    string `toml:"admin_socket"`
+}
+type User struct {
+	Admin       bool     `toml:"admin"`
+	TokenSHA256 string   `toml:"token_sha256"`
+	Identities  []string `toml:"identities"`
+	Minecraft   []string `toml:"minecraft"`
+}
+type Role string
+
+const (
+	Viewer    Role = "viewer"
+	Developer Role = "developer"
+	Owner     Role = "owner"
+)
+
+func (r Role) Allows(minimum Role) bool {
+	rank := map[Role]int{Viewer: 1, Developer: 2, Owner: 3}
+	return rank[minimum] > 0 && rank[r] >= rank[minimum]
 }
 
+type Project struct {
+	Remote        string            `toml:"remote"`
+	DefaultBranch string            `toml:"default_branch"`
+	Trust         string            `toml:"trust"`
+	Git           ProjectGit        `toml:"git"`
+	Minecraft     Target            `toml:"minecraft"`
+	Build         ProjectBuild      `toml:"build"`
+	Loaders       map[string]Loader `toml:"loaders"`
+	Members       map[string]Role   `toml:"members"`
+	Whitelist     []string          `toml:"whitelist"`
+	Quota         Quota             `toml:"quota"`
+	Worlds        ProjectWorlds     `toml:"worlds"`
+}
+type ProjectGit struct {
+	PollInterval    string `toml:"poll_interval"`
+	SSHIdentityFile string `toml:"ssh_identity_file"`
+	KnownHostsFile  string `toml:"known_hosts_file"`
+	HTTPSTokenFile  string `toml:"https_token_file"`
+	HTTPSUsername   string `toml:"https_username"`
+}
+type ProjectBuild struct {
+	Source     string   `toml:"source"`
+	Timeout    string   `toml:"timeout"`
+	GradleArgs []string `toml:"gradle_args"`
+}
 type Loader struct {
 	Enabled               bool         `toml:"enabled"`
 	GradleTask            string       `toml:"gradle_task"`
@@ -59,124 +142,192 @@ type Loader struct {
 	ArtifactExclude       []string     `toml:"artifact_exclude"`
 	LoaderVersionProperty string       `toml:"loader_version_property"`
 	Deps                  []Dependency `toml:"deps"`
+	Agent                 string       `toml:"agent"`
 }
-
 type Dependency struct {
 	Name   string `toml:"name"`
 	URL    string `toml:"url"`
 	Side   string `toml:"side"`
 	SHA256 string `toml:"sha256"`
 }
-
+type Quota struct {
+	MaxRooms         int    `toml:"max_rooms"`
+	RoomMemoryMax    string `toml:"room_memory_max"`
+	BuildCache       int    `toml:"build_cache"`
+	SnapshotKeep     int    `toml:"snapshot_keep"`
+	SnapshotKeepDays int    `toml:"snapshot_keep_days"`
+}
+type ProjectWorlds struct {
+	ExtraRootEntries []string `toml:"extra_root_entries"`
+}
 type Build struct {
-	MaxConcurrent int      `toml:"max_concurrent"`
-	CacheSize     int      `toml:"cache_size"`
-	Timeout       string   `toml:"timeout"`
-	GradleArgs    []string `toml:"gradle_args"`
-	JDKHome       string   `toml:"jdk_home"`
-	SystemdUser   bool     `toml:"systemd_user"`
-	LockFile      string   `toml:"lock_file"`
+	MaxConcurrent int    `toml:"max_concurrent"`
+	LockFile      string `toml:"lock_file"`
 }
-
+type Idle struct {
+	Commit string `toml:"commit"`
+	Branch string `toml:"branch"`
+	World  string `toml:"world"`
+}
 type Rooms struct {
-	Namespace      string         `toml:"namespace"`
-	Kubeconfig     string         `toml:"kubeconfig"`
-	RouterAddress  string         `toml:"router_address"`
-	WebhookSources []string       `toml:"webhook_sources"`
-	Heap           string         `toml:"heap"`
-	MemoryLimit    string         `toml:"memory_limit"`
-	MaxRunning     map[string]int `toml:"max_running"`
-	CommitIdle     string         `toml:"commit_idle"`
-	AssetIdle      string         `toml:"asset_idle"`
-	BranchIdle     string         `toml:"branch_idle"`
-	JoinLease      string         `toml:"join_lease"`
-	StartTimeout   string         `toml:"start_timeout"`
-	DefaultSeed    string         `toml:"default_seed"`
+	Idle         Idle   `toml:"idle"`
+	JoinLease    string `toml:"join_lease"`
+	StartTimeout string `toml:"start_timeout"`
+	Heap         string `toml:"heap"`
+	DefaultSeed  string `toml:"default_seed"`
+}
+type Worlds struct {
+	ScannerFile string `toml:"scanner_file"`
+}
+type Client struct {
+	Path          string                  `toml:"-"`
+	Server        string                  `toml:"server"`
+	DefaultServer string                  `toml:"default_server"`
+	Servers       map[string]ClientServer `toml:"servers"`
+	URL           string                  `toml:"url"`
+	TokenFile     string                  `toml:"token_file"`
+	Project       string                  `toml:"project"`
+	Timeout       string                  `toml:"timeout"`
 }
 
-type Archive struct {
-	Enabled        bool   `toml:"enabled"`
-	KeepPerRoom    int    `toml:"keep_per_room"`
-	KeepDays       int    `toml:"keep_days"`
-	TankTarget     string `toml:"tank_target"`
-	TankBWLimit    string `toml:"tank_bwlimit"`
-	IdentityFile   string `toml:"identity_file"`
-	KnownHostsFile string `toml:"known_hosts_file"`
+type ClientServer struct {
+	URL     string `toml:"url"`
+	Name    string `toml:"name"`
+	Project string `toml:"project"`
 }
 
-type Assets struct {
-	WorldScanner string `toml:"world_scanner"`
-}
-
-func Load(path string) (Config, error) {
-	var c Config
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return c, err
+func (c Client) Selected() (Client, error) {
+	selected := c.Server
+	if selected == "" {
+		selected = c.DefaultServer
 	}
-	if err = toml.Unmarshal(b, &c); err != nil {
-		return c, err
-	}
-	c.Path, err = filepath.Abs(path)
-	if err != nil {
-		return c, err
-	}
-	return c, c.Validate()
-}
-
-func (c Config) Validate() error {
-	if !filepath.IsAbs(c.Server.DataDir) || len(c.Server.Listen) == 0 {
-		return fmt.Errorf("server requires absolute data_dir and listen addresses")
-	}
-	for _, address := range c.Server.Listen {
-		if _, _, err := net.SplitHostPort(address); err != nil {
-			return err
+	if selected == "" && len(c.Servers) == 1 {
+		for name := range c.Servers {
+			selected = name
 		}
 	}
-	for _, base := range []string{c.Server.PublicBaseURL, c.Server.InternalBaseURL} {
-		u, err := url.Parse(base)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
-			return fmt.Errorf("invalid base URL")
+	if selected == "" && len(c.Servers) > 1 {
+		names := make([]string, 0, len(c.Servers))
+		for name := range c.Servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return c, fmt.Errorf("select a server using --server: %s", strings.Join(names, ", "))
+	}
+	if selected != "" {
+		server, ok := c.Servers[selected]
+		if !ok {
+			return c, fmt.Errorf("configured server does not exist: %s", selected)
+		}
+		c.Server, c.URL = selected, server.URL
+		if c.Project == "" {
+			c.Project = server.Project
 		}
 	}
-	if c.Auth.UsersFile == "" || c.Auth.SigningKeyFile == "" {
-		return fmt.Errorf("auth secret file paths are required")
-	}
-	if c.Git.Remote == "" || c.Git.DefaultBranch == "" {
-		return fmt.Errorf("git remote and default_branch are required")
-	}
-	if c.Minecraft.Version == "" || c.Minecraft.Java < 21 || c.Minecraft.Zone == "" {
-		return fmt.Errorf("minecraft version, java and zone are required")
-	}
-	if c.Build.MaxConcurrent != 1 || c.Build.CacheSize < 1 {
-		return fmt.Errorf("build requires max_concurrent=1 and positive cache_size")
-	}
-	if len(c.EnabledLoaders()) == 0 {
-		return fmt.Errorf("at least one loader must be enabled")
-	}
-	for _, value := range []string{c.Git.PollInterval, c.Build.Timeout, c.Rooms.CommitIdle, c.Rooms.AssetIdle, c.Rooms.BranchIdle, c.Rooms.JoinLease, c.Rooms.StartTimeout} {
-		d, err := time.ParseDuration(value)
-		if err != nil || d <= 0 {
-			return fmt.Errorf("invalid positive duration %q", value)
-		}
-	}
-	if c.Rooms.Namespace == "" || c.Rooms.Kubeconfig == "" || c.Rooms.RouterAddress == "" {
-		return fmt.Errorf("rooms namespace, kubeconfig and router_address are required")
-	}
-	if len(c.Rooms.MaxRunning) == 0 {
-		return fmt.Errorf("room capacity is required")
-	}
-	for _, limit := range c.Rooms.MaxRunning {
-		if limit < 0 {
-			return fmt.Errorf("room capacity cannot be negative")
-		}
-	}
-	return nil
+	return c, nil
 }
 
-func (c Config) EnabledLoaders() []string {
+type Git struct {
+	ProjectGit
+	Remote        string
+	DefaultBranch string
+}
+type ProjectMinecraft struct {
+	Target
+	Image      string
+	Zone       string
+	AcceptEULA bool
+	Whitelist  []string
+}
+type EffectiveBuild struct {
+	Build
+	ProjectBuild
+	CacheSize int
+	JDKHome   string
+}
+type EffectiveRooms struct {
+	Heap         string
+	MemoryLimit  string
+	MaxRooms     int
+	CommitIdle   string
+	WorldIdle    string
+	BranchIdle   string
+	JoinLease    string
+	StartTimeout string
+	DefaultSeed  string
+}
+type EffectiveArchive struct {
+	Archive
+	KeepPerRoom int
+	KeepDays    int
+}
+type EffectiveWorlds struct {
+	Worlds
+	ProjectWorlds
+}
+type ProjectConfig struct {
+	ID        string
+	Path      string
+	DataDir   string
+	Trust     string
+	Server    Server
+	Git       Git
+	Minecraft ProjectMinecraft
+	Loaders   map[string]Loader
+	Agents    map[string]Agent
+	Build     EffectiveBuild
+	Rooms     EffectiveRooms
+	Archive   EffectiveArchive
+	Worlds    EffectiveWorlds
+	Runtime   Runtime
+	Auth      Auth
+	Members   map[string]Role
+	Quota     Quota
+}
+
+var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,22}$`)
+
+func ValidID(value string) bool {
+	return idPattern.MatchString(value) && !strings.HasSuffix(value, "-") && !strings.Contains(value, "--")
+}
+
+func (c Config) ForProject(id string) (ProjectConfig, error) {
+	p, ok := c.Projects[id]
+	if !ok {
+		return ProjectConfig{}, fmt.Errorf("unknown project")
+	}
+	runtime, ok := c.Runtimes[fmt.Sprintf("java%d", p.Minecraft.Java)]
+	if !ok {
+		return ProjectConfig{}, fmt.Errorf("project has no configured Java runtime")
+	}
+	whitelist := map[string]bool{}
+	for _, value := range p.Whitelist {
+		whitelist[value] = true
+	}
+	for user := range p.Members {
+		for _, value := range c.Users[user].Minecraft {
+			whitelist[value] = true
+		}
+	}
+	players := make([]string, 0, len(whitelist))
+	for value := range whitelist {
+		players = append(players, value)
+	}
+	sort.Strings(players)
+	return ProjectConfig{
+		ID: id, Path: c.Path, DataDir: filepath.Join(c.Server.DataDir, "projects", id), Trust: p.Trust,
+		Server: c.Server, Git: Git{p.Git, p.Remote, p.DefaultBranch},
+		Minecraft: ProjectMinecraft{p.Minecraft, runtime.ServerImage, c.Server.Zone, c.Minecraft.AcceptEULA, players},
+		Loaders:   p.Loaders, Agents: c.Agents,
+		Build:   EffectiveBuild{c.Build, p.Build, p.Quota.BuildCache, runtime.JDKHome},
+		Rooms:   EffectiveRooms{c.Rooms.Heap, p.Quota.RoomMemoryMax, p.Quota.MaxRooms, c.Rooms.Idle.Commit, c.Rooms.Idle.World, c.Rooms.Idle.Branch, c.Rooms.JoinLease, c.Rooms.StartTimeout, c.Rooms.DefaultSeed},
+		Archive: EffectiveArchive{c.Archive, p.Quota.SnapshotKeep, p.Quota.SnapshotKeepDays},
+		Worlds:  EffectiveWorlds{c.Worlds, p.Worlds}, Runtime: c.Runtime, Auth: c.Auth, Members: p.Members, Quota: p.Quota,
+	}, nil
+}
+func (p Project) EnabledLoaders() []string {
 	names := []string{}
-	for name, loader := range c.Loaders {
+	for name, loader := range p.Loaders {
 		if loader.Enabled {
 			names = append(names, name)
 		}
@@ -184,11 +335,19 @@ func (c Config) EnabledLoaders() []string {
 	sort.Strings(names)
 	return names
 }
-
+func (p ProjectConfig) EnabledLoaders() []string {
+	return (Project{Loaders: p.Loaders}).EnabledLoaders()
+}
 func Duration(value string) time.Duration {
 	d, err := time.ParseDuration(value)
 	if err != nil {
 		panic(err)
 	}
 	return d
+}
+func (c Config) Warnings() []string {
+	if !c.Minecraft.AcceptEULA {
+		return []string{"minecraft.accept_eula=false: room starts require acceptance of the Minecraft EULA"}
+	}
+	return nil
 }

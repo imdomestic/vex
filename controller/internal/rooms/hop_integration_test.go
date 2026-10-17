@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/assets"
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
-func TestRealAssetDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.T) {
-	archive, metadataPath, manifestPath, scanner := os.Getenv("CHORUS_IT_ASSET_ARCHIVE"), os.Getenv("CHORUS_IT_ASSET_METADATA"), os.Getenv("CHORUS_IT_BUILD_MANIFEST"), os.Getenv("CHORUS_IT_SCANNER")
+func TestRealWorldDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.T) {
+	archive, metadataPath, manifestPath, scanner := os.Getenv("VEX_IT_WORLD_ARCHIVE"), os.Getenv("VEX_IT_WORLD_METADATA"), os.Getenv("VEX_IT_BUILD"), os.Getenv("VEX_IT_SCANNER")
 	if archive == "" || metadataPath == "" || manifestPath == "" || scanner == "" {
 		t.Skip("requires real published plaza metadata/archive, ready build manifest and scanner")
 	}
@@ -25,7 +25,7 @@ func TestRealAssetDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	var metadata model.AssetMetadata
+	var metadata model.WorldMetadata
 	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -46,38 +46,42 @@ func TestRealAssetDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := config.Config{Server: config.Server{DataDir: filepath.Join(root, "data")}, Minecraft: config.Minecraft{Version: *build.Minecraft}, Assets: config.Assets{WorldScanner: scanner}}
-	assetManager, err := assets.New(cfg, db)
+	db, err = db.WithProject("world-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ProjectConfig{ID: "world-test", DataDir: filepath.Join(root, "data"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: *build.Minecraft}}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}}
+	worldManager, err := worlds.New(cfg, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, _, err = assetManager.Publish(ctx, metadata, archive); err != nil {
+	if _, _, err = worldManager.Publish(ctx, metadata, archive); err != nil {
 		t.Fatal(err)
 	}
-	asset, err := assetManager.Get(ctx, metadata.ID)
+	world, err := worldManager.Get(ctx, metadata.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{Cfg: cfg, DB: db, Assets: assetManager}
-	available, err := manager.assetDestination(ctx, asset, build)
+	manager := &Manager{Cfg: cfg, DB: db, Worlds: worldManager}
+	available, err := manager.worldDestination(ctx, world, build)
 	if err != nil || available.RoomID != nil || available.State != "available" || available.BuildID != build.ID {
-		t.Fatalf("unregistered asset destination: %+v %v", available, err)
+		t.Fatalf("unregistered world destination: %+v %v", available, err)
 	}
-	id, err := RoomID("asset", build.SHA, build.Loader, asset.ID)
+	id, err := RoomID("world", build.SHA, build.Loader, world.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = manager.Get(ctx, id); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("listing created an asset room: %v", err)
+		t.Fatalf("listing created a world room: %v", err)
 	}
-	room := manager.newRoom(id, "asset", build.SHA, build.Loader, "asset:"+asset.ID)
-	room.Asset = &asset.ID
+	room := manager.newRoom(id, "world", build.SHA, build.Loader, "world:"+world.ID)
+	room.World = &world.ID
 	if err = db.Put(ctx, "room", id, room); err != nil {
 		t.Fatal(err)
 	}
-	registered, err := manager.assetDestination(ctx, asset, build)
+	registered, err := manager.worldDestination(ctx, world, build)
 	if err != nil || registered.RoomID == nil || *registered.RoomID != id || registered.State != "stopped" {
-		t.Fatalf("registered asset destination: %+v %v", registered, err)
+		t.Fatalf("registered world destination: %+v %v", registered, err)
 	}
 }

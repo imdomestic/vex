@@ -7,16 +7,16 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/imdomestic/chorus-testbed/controller/internal/assets"
-	"github.com/imdomestic/chorus-testbed/controller/internal/auth"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/auth"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func (m *Manager) hopSource(ctx context.Context, from string, identity auth.Identity) (model.Room, model.Build, error) {
 	var build model.Build
 	room, err := m.Get(ctx, from)
-	if err != nil || identity.RoomID != from || room.Generation != identity.Generation || room.BuildID != identity.BuildID {
+	if err != nil || identity.Project != m.Cfg.ID || identity.RoomID != from || room.Generation != identity.Generation || room.BuildID != identity.BuildID {
 		return room, build, model.Failure("unauthorized", "来源房间凭据无效")
 	}
 	if room.State != "ready" {
@@ -42,23 +42,26 @@ func (m *Manager) nextBuild(ctx context.Context, room model.Room) (string, error
 	return "", model.Failure("not_found", "目标分支已经不存在")
 }
 
-func (m *Manager) assetDestination(ctx context.Context, asset model.Asset, build model.Build) (model.HopDestination, error) {
+func (m *Manager) worldDestination(ctx context.Context, world model.World, build model.Build) (model.HopDestination, error) {
 	var result model.HopDestination
-	if asset.State != "active" || asset.Restore != nil && (asset.Restore.Status == "queued" || asset.Restore.Status == "running") {
-		return result, model.Failure("conflict", "资产尚未处于可进入状态")
+	if world.State != "active" || world.Restore != nil && (world.Restore.Status == "queued" || world.Restore.Status == "running") {
+		return result, model.Failure("conflict", "世界尚未处于可进入状态")
 	}
-	id, err := RoomID("asset", build.SHA, build.Loader, asset.ID)
+	id, err := RoomID("world", build.SHA, build.Loader, world.ID)
 	if err != nil {
 		return result, err
 	}
-	revision := asset.LatestRev
+	if len(id)+2+len(m.Cfg.ID) > 63 {
+		return result, model.Failure("invalid_request", "房间和项目组成的主机名超过 63 个字符")
+	}
+	revision := world.LatestRev
 	state := "available"
 	var existingRoomID *string
 	worldExists := false
 	room, err := m.Get(ctx, id)
 	if err == nil {
 		if room.Label != "testing" || room.State == "stopping" || room.State == "archiving" || room.State == "lost" {
-			return result, model.Failure("conflict", "资产房间当前无法进入")
+			return result, model.Failure("conflict", "世界房间当前无法进入")
 		}
 		state = room.State
 		existingRoomID = &room.ID
@@ -73,15 +76,15 @@ func (m *Manager) assetDestination(ctx context.Context, asset model.Asset, build
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return result, err
 	}
-	value, err := m.Assets.Revision(ctx, asset.ID, revision)
+	value, err := m.Worlds.Revision(ctx, world.ID, revision)
 	if err != nil {
 		return result, err
 	}
-	if err = assets.ValidateCompatibility(value, build); err != nil {
+	if err = worlds.ValidateCompatibility(value, build); err != nil {
 		return result, err
 	}
 	if !worldExists {
-		file, err := m.Assets.OpenWorld(ctx, asset.ID, revision)
+		file, err := m.Worlds.OpenWorld(ctx, world.ID, revision)
 		if err != nil {
 			return result, err
 		}
@@ -89,7 +92,7 @@ func (m *Manager) assetDestination(ctx context.Context, asset model.Asset, build
 			return result, err
 		}
 		if value.ResourcePack != nil {
-			file, err = m.Assets.OpenPack(ctx, value.ResourcePack.ID, value.ResourcePack.Rev)
+			file, err = m.Worlds.OpenPack(ctx, value.ResourcePack.ID, value.ResourcePack.Rev)
 			if err != nil {
 				return result, err
 			}
@@ -98,7 +101,7 @@ func (m *Manager) assetDestination(ctx context.Context, asset model.Asset, build
 			}
 		}
 	}
-	return model.HopDestination{Dest: "asset:" + asset.ID, Kind: "asset", ID: asset.ID, Title: asset.Title, RoomID: existingRoomID, BuildID: build.ID, State: state}, nil
+	return model.HopDestination{Project: m.Cfg.ID, Dest: "world:" + world.ID, Kind: "world", ID: world.ID, Title: world.Title, RoomID: existingRoomID, BuildID: build.ID, State: state}, nil
 }
 
 func (m *Manager) Destinations(ctx context.Context, from string, identity auth.Identity) ([]model.HopDestination, error) {
@@ -109,12 +112,12 @@ func (m *Manager) Destinations(ctx context.Context, from string, identity auth.I
 		return nil, err
 	}
 	result := []model.HopDestination{}
-	allAssets, err := m.Assets.List(ctx)
+	allWorlds, err := m.Worlds.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, asset := range allAssets {
-		value, err := m.assetDestination(ctx, asset, build)
+	for _, world := range allWorlds {
+		value, err := m.worldDestination(ctx, world, build)
 		if err != nil {
 			var business *model.Error
 			if errors.As(err, &business) {
@@ -131,7 +134,7 @@ func (m *Manager) Destinations(ctx context.Context, from string, identity auth.I
 		return nil, err
 	}
 	for _, room := range allRooms {
-		if room.ID == source.ID || room.Kind == "asset" || room.Label != "testing" {
+		if room.ID == source.ID || room.Kind == "world" || room.Label != "testing" {
 			continue
 		}
 		if room.State != "stopped" && room.State != "queued" && room.State != "building" && room.State != "starting" && room.State != "ready" {
@@ -149,7 +152,7 @@ func (m *Manager) Destinations(ctx context.Context, from string, identity auth.I
 			continue
 		}
 		id := room.ID
-		result = append(result, model.HopDestination{Dest: "room:" + id, Kind: "room", ID: id, Title: id, RoomID: &id, BuildID: buildID, State: room.State})
+		result = append(result, model.HopDestination{Project: m.Cfg.ID, Dest: "room:" + id, Kind: "room", ID: id, Title: id, RoomID: &id, BuildID: buildID, State: room.State})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Kind != result[j].Kind {
@@ -174,19 +177,19 @@ func (m *Manager) Hop(ctx context.Context, from, destination string, player mode
 	kind, id, qualified := strings.Cut(destination, ":")
 	if !qualified {
 		id = destination
-		var asset model.Asset
-		assetErr := m.DB.Get(ctx, "asset", id, &asset)
+		var world model.World
+		worldErr := m.DB.Get(ctx, "world", id, &world)
 		_, roomErr := m.Get(ctx, id)
-		if assetErr == nil && roomErr == nil {
-			return result, 0, model.Failure("conflict", "目的地同时匹配资产和房间，请使用 asset: 或 room: 前缀")
+		if worldErr == nil && roomErr == nil {
+			return result, 0, model.Failure("conflict", "目的地同时匹配世界和房间，请使用 world: 或 room: 前缀")
 		}
-		if assetErr == nil {
-			kind = "asset"
+		if worldErr == nil {
+			kind = "world"
 		} else if roomErr == nil {
 			kind = "room"
 		} else {
-			if !errors.Is(assetErr, store.ErrNotFound) {
-				return result, 0, assetErr
+			if !errors.Is(worldErr, store.ErrNotFound) {
+				return result, 0, worldErr
 			}
 			if !errors.Is(roomErr, store.ErrNotFound) {
 				return result, 0, roomErr
@@ -195,15 +198,15 @@ func (m *Manager) Hop(ctx context.Context, from, destination string, player mode
 		}
 	}
 	switch kind {
-	case "asset":
-		asset, err := m.Assets.Get(ctx, id)
+	case "world":
+		world, err := m.Worlds.Get(ctx, id)
 		if err != nil {
 			return result, 0, err
 		}
-		if _, err = m.assetDestination(ctx, asset, build); err != nil {
+		if _, err = m.worldDestination(ctx, world, build); err != nil {
 			return result, 0, err
 		}
-		room, _, err := m.create(ctx, "asset", source.SHA, source.Loader, "asset:"+id, id)
+		room, _, err := m.create(ctx, "world", source.SHA, source.Loader, "world:"+id, id)
 		if err != nil {
 			return result, 0, err
 		}

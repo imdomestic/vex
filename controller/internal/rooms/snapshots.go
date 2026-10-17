@@ -6,14 +6,17 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/archive"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/archive"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
 )
 
 func (m *Manager) PublishSnapshot(ctx context.Context, snapshot model.Snapshot, source string) (model.Snapshot, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if snapshot.Project != m.Cfg.ID {
+		return snapshot, false, model.Failure("unauthorized", "快照不属于当前项目")
+	}
 	var old model.Snapshot
 	err := m.DB.Get(ctx, "snapshot", snapshot.ID, &old)
 	if err == nil {
@@ -37,10 +40,10 @@ func (m *Manager) PublishSnapshot(ctx context.Context, snapshot model.Snapshot, 
 		return snapshot, false, model.Failure("conflict", "当前房间没有匹配的归档任务")
 	}
 	snapshot.CapturedAt = *rt.StoppedAt
-	if room.Asset != nil && room.SeedResolved != nil {
-		snapshot.Asset = &model.PackRef{ID: *room.Asset, Rev: room.SeedResolved.Rev}
+	if room.World != nil && room.SeedResolved != nil {
+		snapshot.World = &model.PackRef{ID: *room.World, Rev: room.SeedResolved.Rev}
 	}
-	dest := SnapshotPath(m.Cfg.Server.DataDir, snapshot)
+	dest := SnapshotPath(m.Cfg.DataDir, snapshot)
 	if err = os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
 		return snapshot, false, err
 	}
@@ -52,7 +55,7 @@ func (m *Manager) PublishSnapshot(ctx context.Context, snapshot model.Snapshot, 
 		if err := tx.Put(ctx, "snapshot", snapshot.ID, snapshot); err != nil {
 			return err
 		}
-		if err := archive.QueueSnapshot(ctx, tx, m.Cfg.Server.DataDir, snapshot); err != nil {
+		if err := archive.QueueSnapshot(ctx, tx, m.Cfg.DataDir, snapshot); err != nil {
 			return err
 		}
 		return tx.Put(ctx, "room", room.ID, room)

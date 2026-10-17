@@ -10,10 +10,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/auth"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/auth"
+	"github.com/imdomestic/vex/controller/internal/filehash"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
 func (s *Server) snapshotList(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
@@ -77,10 +78,10 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 	if r.Header.Get("Content-Type") != "application/gzip" {
 		return model.Failure("invalid_request", "快照必须使用 application/gzip")
 	}
-	if err = worldarchive.Space(s.Cfg.Server.DataDir); err != nil {
+	if err = worldarchive.Space(s.Cfg.DataDir); err != nil {
 		return model.Failure("archive_failed", err.Error())
 	}
-	work := filepath.Join(s.Cfg.Server.DataDir, ".work")
+	work := filepath.Join(s.Cfg.DataDir, ".work")
 	if err = os.MkdirAll(work, 0700); err != nil {
 		return err
 	}
@@ -101,14 +102,15 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = worldarchive.Validate(f.Name(), s.Cfg.Minecraft.Version); err != nil {
+	if err = worldarchive.Validate(f.Name(), s.Cfg.Minecraft.Version, s.Cfg.Worlds.ExtraRootEntries...); err != nil {
 		return model.Failure("invalid_request", err.Error())
 	}
-	sha, size, err := worldarchive.Digest(f.Name())
+	hashes, err := filehash.File(f.Name())
 	if err != nil {
 		return err
 	}
-	snapshot := model.Snapshot{ID: fmt.Sprintf("%s-g%d", id.RoomID, id.Generation), RoomID: id.RoomID, RoomGeneration: id.Generation, BuildID: id.BuildID, Minecraft: s.Cfg.Minecraft.Version, SHA256: sha, Size: size, CreatedAt: time.Now().UTC(), LocalAvailable: true}
+	snapshotID := fmt.Sprintf("%s-g%d", id.RoomID, id.Generation)
+	snapshot := model.Snapshot{Project: s.Cfg.ID, ID: snapshotID, Path: filepath.ToSlash(filepath.Join("snapshots", id.RoomID, snapshotID+".tar.gz")), RoomID: id.RoomID, RoomGeneration: id.Generation, BuildID: id.BuildID, Minecraft: s.Cfg.Minecraft.Version, SHA256: hashes.SHA256, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Size: hashes.Size, CreatedAt: time.Now().UTC(), LocalAvailable: true}
 	snapshot, created, err := s.Rooms.PublishSnapshot(r.Context(), snapshot, f.Name())
 	if err != nil {
 		return err

@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/runtime"
 )
 
 func (m *Manager) recordReconcileError(ctx context.Context, id string, cause error) error {
@@ -62,13 +63,13 @@ func (m *Manager) failWithError(ctx context.Context, room model.Room, rt Runtime
 }
 
 func (m *Manager) reconcileFailure(ctx context.Context, room model.Room, rt Runtime) error {
-	status, err := m.Kube.ObserveRoom(ctx, room.ID)
+	status, err := m.observe(ctx, room, rt)
 	if err != nil {
 		return err
 	}
-	if status.PodExists && !rt.FailureLogsCaptured {
+	if status.ProcessExists && !rt.FailureLogsCaptured {
 		logContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-		logs, logErr := m.Kube.FailureLogs(logContext, room.ID, 200)
+		logs, logErr := m.Backend.Logs(logContext, rt.Resource, runtime.LogOptions{Tail: 200, Diagnostics: true})
 		cancel()
 		if logErr != nil {
 			slog.Warn("failed room diagnostic logs unavailable", "room", room.ID)
@@ -87,23 +88,25 @@ func (m *Manager) reconcileFailure(ctx context.Context, room model.Room, rt Runt
 	room.LastError, room.IdleSince = rt.Failure, nil
 	room.Players = []model.Player{}
 	rt.Online = 0
-	if status.PodExists {
+	if status.ProcessExists {
 		room.State, room.Phase = "starting", "stopping failed server"
 		if err = m.save(ctx, room, rt); err != nil {
 			return err
 		}
 	}
-	if err = m.Kube.ScaleRoom(ctx, room.ID, 0); err != nil {
-		return err
+	if rt.Resource.ID != "" {
+		if err = m.Backend.StopRoom(ctx, rt.Resource, runtime.StopOptions{Timeout: 120 * time.Second}); err != nil {
+			return err
+		}
 	}
-	status, err = m.Kube.ObserveRoom(ctx, room.ID)
+	status, err = m.observe(ctx, room, rt)
 	if err != nil {
 		return err
 	}
-	if status.PodExists {
+	if status.ProcessExists {
 		return nil
 	}
 	room.State, room.Phase = "failed", "failed"
-	rt.PodNotReadySince, rt.NodeMissingSince = nil, nil
+	rt.ProcessNotReadySince, rt.NodeMissingSince = nil, nil
 	return m.save(ctx, room, rt)
 }

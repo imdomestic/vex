@@ -4,21 +4,31 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 func TestIDsAndStartTransitions(t *testing.T) {
-	if id := BranchID("Feature/Hello_World", "fabric", false); id != "feature-hello-world-fabric" {
+	sha := strings.Repeat("a", 40)
+	if id, err := RoomID("commit", sha, "quilt", ""); err != nil || id != "caaaaaaaa-quilt" {
+		t.Fatal("room ID must accept configured loader IDs", id, err)
+	}
+	for _, loader := range []string{"", "Fabric", "bad--loader", "../fabric"} {
+		if _, err := RoomID("commit", sha, loader, ""); err == nil {
+			t.Fatal("invalid loader ID was accepted", loader)
+		}
+	}
+	if id := BranchID("test", "Feature/Hello_World", "fabric", false); id != "feature-hello-world-fabric" {
 		t.Fatal(id)
 	}
-	long := BranchID(strings.Repeat("branch", 20), "fabric", false)
-	if len(long) > 40 || !strings.HasSuffix(long, "-fabric") {
+	project := strings.Repeat("p", 23)
+	long := BranchID(project, strings.Repeat("branch", 20), "fabric", false)
+	if len(long)+2+len(project) > 63 || !strings.HasSuffix(long, "-fabric") {
 		t.Fatal(long)
 	}
-	if BranchID("a/b", "fabric", true) == BranchID("a_b", "fabric", true) {
+	if BranchID("test", "a/b", "fabric", true) == BranchID("test", "a_b", "fabric", true) {
 		t.Fatal("collision suffix is not tied to original branch")
 	}
-	if !strings.HasPrefix(BranchID("中文", "fabric", false), "branch-") {
+	if !strings.HasPrefix(BranchID("test", "中文", "fabric", false), "branch-") {
 		t.Fatal("empty slug was not named")
 	}
 	for _, state := range []string{"stopped", "closed", "failed", "queued", "building", "starting", "ready"} {

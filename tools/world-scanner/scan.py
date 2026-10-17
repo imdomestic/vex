@@ -10,14 +10,8 @@ import nbtlib
 from nbt import nbt
 
 
-PROTECTED = Path('/home/linwhite/d2-assets/sensitive')
-
-
 def permitted(path):
-    resolved = Path(path).resolve(strict=True)
-    if resolved == PROTECTED or PROTECTED in resolved.parents:
-        raise ValueError('禁止访问敏感资源目录')
-    return resolved
+    return Path(path).resolve(strict=True)
 
 
 def identifiers(value):

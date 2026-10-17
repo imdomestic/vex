@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-func TestActualStoppedChorusWorld(t *testing.T) {
-	filename := os.Getenv("CHORUS_IT_WORLD_ARCHIVE")
-	if filename == "" {
-		t.Skip("requires an actual stopped Chorus world archive")
+func TestActualStoppedWorld(t *testing.T) {
+	filename, version := os.Getenv("VEX_IT_WORLD_ARCHIVE"), os.Getenv("VEX_IT_MINECRAFT")
+	if filename == "" || version == "" {
+		t.Skip("requires VEX_IT_WORLD_ARCHIVE and VEX_IT_MINECRAFT from an actual stopped world")
 	}
-	if err := Validate(filename, "26.3"); err != nil {
+	if err := Validate(filename, version); err != nil {
 		t.Fatal(err)
 	}
 }

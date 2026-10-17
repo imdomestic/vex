@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/events"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
-	"github.com/imdomestic/chorus-testbed/controller/internal/supervisor"
+	"github.com/imdomestic/vex/controller/internal/events"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/supervisor"
 )
 
 type synchronizedLog struct {
@@ -48,13 +48,17 @@ func TestRealEventBusRecoversAfterSQLiteRecordRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	bus := events.New(db)
-	_, stream, closeSub, err := bus.Subscribe(ctx, "")
+	project, err := db.WithProject("example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(db, "example")
+	_, stream, closeSub, err := bus.Subscribe(ctx, []string{"example"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeSub()
-	if err = db.Put(ctx, "room", "broken-record", 1); err != nil {
+	if err = project.Put(ctx, "room", "broken-record", 1); err != nil {
 		t.Fatal(err)
 	}
 	output := &synchronizedLog{}
@@ -75,11 +79,11 @@ func TestRealEventBusRecoversAfterSQLiteRecordRepair(t *testing.T) {
 		case <-ticker.C:
 		}
 	}
-	if err = db.Delete(ctx, "room", "broken-record"); err != nil {
+	if err = project.Delete(ctx, "room", "broken-record"); err != nil {
 		t.Fatal(err)
 	}
-	room := model.Room{ID: "recovered", State: "stopped"}
-	if err = db.Put(ctx, "room", room.ID, room); err != nil {
+	room := model.Room{Project: "example", ID: "recovered", State: "stopped"}
+	if err = project.Put(ctx, "room", room.ID, room); err != nil {
 		t.Fatal(err)
 	}
 	select {

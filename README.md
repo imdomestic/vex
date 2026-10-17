@@ -1,39 +1,25 @@
-# Chorus Testbed
+# Vex
 
-chorusd 管理 Chorus 构建、Minecraft 房间、世界快照、资产与 tank 归档；独立客户端 Ruri Chorus 提供服务器和 Git 页面。执行结果见 [第二轮报告](docs/reports/2026-10-15-round2.md)，接口定义见 [API](docs/api.md)，配置选择见 [决策](docs/decisions.md)。
+Vex 管理 Minecraft 模组项目的 Git 分支、构建、测试房间、世界 revision、资源包和快照。`vexd` 提供 v2 API，`vex` 提供项目操作命令，`agent/` 提供服务端房间转移功能。
 
-## 运行位置
+当前实现使用 Kubernetes 运行后端，支持 Fabric 和 NeoForge。归档后端支持本地目录及 rsync-ssh。宿主机构建只接受 `trust = "trusted"` 的项目，由独立 `vex-build` 账户执行；所有项目共享一个构建名额。
 
-| 项目 | 位置 |
-| --- | --- |
-| API | `http://encore.inner.imdomestic.com:8790` |
-| Minecraft 当前域名 | `<room>.chorus.internal:25565` |
-| 生产配置 | encore `/var/lib/chorusd/config.toml` |
-| 数据 | encore `/srv/chorus` |
-| 用户 token | encore `/var/lib/chorusd/secrets/users.toml` |
-| 本地服务端仓库 | `/Users/linwhite/chorus-testbed` |
-| 本地客户端仓库 | `/Users/linwhite/ruri-chorus` |
-| encore Git remote | `encore:/home/linwhite/git/chorus-testbed.git` |
-
-源码通过匿名 HTTPS 读取 `imdomestic/chorus` 的 `main`，迁移核对与真实进房结果见 [REPOSITORY-MIGRATION.md](REPOSITORY-MIGRATION.md)。生产归档通过专用账号 `chorus-archive` 同步到 tank，带宽限制为 `5M`；远端摘要与大小验证成功后才允许淘汰热缓存。
-
-## 客户端
-
-打开 `Ruri Chorus.app`，登录 Microsoft 账号，在设置中检查 Chorus 地址。API token 已存入独立钥匙串。服务器页面可以启动 main-fabric；Git 页面可以构建指定提交并启动临时房间。
-
-应用内置 CLI 可查询当前状态：
+配置按内置默认值、TOML 文件、`VEX_` 环境变量、命令行四层合并。服务端和 CLI 使用同一套解析器；未知字段和未支持的 loader 会使配置检查失败。项目 ID 为最多 23 个字符的小写标识符，禁止连续 `--` 和末尾 `-`。房间地址为 `<room>--<project>.<zone>`。
 
 ```sh
-"/Users/linwhite/ruri-chorus/build/Ruri Chorus.app/Contents/Helpers/ruri-cli" chorus rooms
-"/Users/linwhite/ruri-chorus/build/Ruri Chorus.app/Contents/Helpers/ruri-cli" chorus builds
+vexd config check --config /etc/vex/vexd.toml
+vexd user invite operator
+vex login https://vex.example/i/XXXX-XXXX
+vex config show --sources
+vex -p example-mod git branches
+vex -p example-mod rooms list
+vex world publish /path/to/world -p example-mod --world plaza
 ```
 
-完整客户端构建、测试和登录验收说明位于 ruri-chorus 的 `CHORUS.md` 与 `CHORUS-VALIDATION.md`。
+运行房间需要明确设置 `minecraft.accept_eula = true`。人工登录使用一次性邀请，会话凭据保存在 macOS Keychain 或 Linux Secret Service；系统凭据服务不可用时使用当前用户独占的 0600 文件。`vex logout` 吊销当前会话并清除本机凭据。自动化使用配置中的静态 `token_sha256`，通过 `vex login --token-stdin` 登录，或者配置 `token_file`。签名密钥、Git 凭据、kubeconfig 和归档凭据使用文件路径引用。
 
-## 开发与部署
+CLI 配置位于 `~/.config/vex/config.toml`，登录成功会登记 `[servers.<name>]` 的 URL 和显示名称；`default_server` 指定默认服务器，`--server <name>` 选择其他服务器。服务器 URL 经过规范化后作为独立的凭据索引。每台服务器只有一个可访问项目时自动选择该项目；存在多个项目时使用 `-p` 选择。
 
-Go 单元测试从 `controller/` 执行 `go test ./...`，集成测试使用 `-tags integration`，连接真实组件；临时目录与 Go 缓存放在仓库 `.work/` 下。Fabric 模组位于 `hop-mod/`，世界扫描工具位于 `tools/world-scanner/`。
+设计范围见 [Vex 设计](docs/design/vex.md) 和 [P1 补充指令](docs/directives/2026-10-17-vex-p1-amendment.md)。构建、NixOS 部署、真实组件测试和系统切换保护见 [部署说明](deploy/README.md)。实际验收记录见 [P1 报告](docs/reports/2026-10-17-vex-p1.md)。
 
-系统配置由 `imdomestic/nix-config` 管理；应用由仓库根目录的 Nix flake 构建并安装到 `/nix/var/nix/profiles/chorus`。系统部署执行构建、dry-activate、定时恢复、test、新 SSH 检查与持久切换流程。具体说明见 [部署说明](deploy/README.md)。
-
-用户凭据和签名密钥由文件路径提供；凭据内容不得写入命令参数、日志、文档或 Git。旧 Minecraft 文件、归档和服务 masked 状态保持保留。
+系统配置由独立的 `imdomestic/nix-config` 仓库管理，通过本仓库 `nixosModules.vexd` 引入服务模块；应用由根 flake 的 `packages.x86_64-linux.vex` 构建。早期实施与归档工具保存在 [历史目录](docs/reports/archive/README.md)，首次系统搭建配置保存在 [bootstrap 归档](docs/reports/bootstrap/README.md)。

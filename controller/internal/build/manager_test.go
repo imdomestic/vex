@@ -13,16 +13,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/config"
-	"github.com/imdomestic/chorus-testbed/controller/internal/gitmirror"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/gitmirror"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/store"
 	"golang.org/x/sys/unix"
 )
 
 func repositoryCommand(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-c", "user.name=Chorus Integration", "-c", "user.email=chorus@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
+	command := exec.Command("git", append([]string{"-c", "user.name=Vex Integration", "-c", "user.email=vex@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 	command.Dir = dir
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -61,15 +61,25 @@ func realManager(t *testing.T) (*Manager, []string) {
 			t.Error(err)
 		}
 	})
-	cfg := config.Config{
+	scoped, err := db.WithProject("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ProjectConfig{
+		ID: "alpha", Trust: "trusted", DataDir: filepath.Join(root, "data", "projects", "alpha"),
 		Server:  config.Server{DataDir: filepath.Join(root, "data")},
+		Git:     config.Git{Remote: source},
 		Loaders: map[string]config.Loader{"fabric": {Enabled: true}},
-		Build:   config.Build{CacheSize: 1, Timeout: "1m", JDKHome: root, LockFile: filepath.Join(root, "build.lock")},
+		Build: config.EffectiveBuild{
+			Build:        config.Build{LockFile: filepath.Join(root, "build.lock")},
+			ProjectBuild: config.ProjectBuild{Source: "host", Timeout: "1m"},
+			CacheSize:    1, JDKHome: root,
+		},
 	}
 	if err = os.WriteFile(cfg.Build.LockFile, nil, 0444); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := New(cfg, db, mirror)
+	manager, err := New(cfg, scoped, mirror)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +178,7 @@ func TestReadyReferencesAndLRUKeepPermanentAttempts(t *testing.T) {
 		}
 		values = append(values, value)
 	}
-	for _, kind := range []string{"branch", "commit", "asset"} {
+	for _, kind := range []string{"branch", "commit", "world"} {
 		room := model.Room{ID: "held-room", Kind: kind, State: "stopped", BuildID: values[0].ID}
 		if err := m.db.Put(ctx, "room", room.ID, room); err != nil {
 			t.Fatal(err)
@@ -193,7 +203,7 @@ func TestReadyReferencesAndLRUKeepPermanentAttempts(t *testing.T) {
 	if err != nil || !fresh || value.Attempt != 2 {
 		t.Fatalf("evicted attempt counter: %+v %v %v", value, fresh, err)
 	}
-	if err = m.db.Put(ctx, "room", "held-room", model.Room{ID: "held-room", Kind: "asset", State: "closed", BuildID: values[0].ID}); err != nil {
+	if err = m.db.Put(ctx, "room", "held-room", model.Room{ID: "held-room", Kind: "world", State: "closed", BuildID: values[0].ID}); err != nil {
 		t.Fatal(err)
 	}
 	value, fresh, err = m.Request(ctx, commits[0], "fabric", true)
@@ -209,16 +219,15 @@ func TestWorkerRecordsRealCheckoutFailureAndReleasesLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Worker(ctx, m.cfg, m.db, m.mirror, value.ID); err == nil {
+	if err = m.Process(ctx, value.ID); err == nil {
 		t.Fatal("commit without gradle.properties was accepted")
 	}
 	failed, err := m.Get(ctx, value.ID)
 	if err != nil || failed.Status != "failed" || failed.LastError == nil || failed.LastError.Code != "build_failed" || failed.FinishedAt == nil || failed.StartedAt == nil {
 		t.Fatalf("worker failure: %+v %v", failed, err)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.cfg.Server.DataDir, "worktrees"))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("worktree cleanup: %v %v", entries, err)
+	if _, err = os.Stat(filepath.Join(m.workDir(value), "source")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree cleanup: %v", err)
 	}
 	first, err := os.Open(m.cfg.Build.LockFile)
 	if err != nil {
@@ -280,7 +289,7 @@ func TestFailedBuildRetentionRemovesLogsAfterSevenDays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = Worker(ctx, m.cfg, m.db, m.mirror, value.ID); err == nil {
+		if err = m.Process(ctx, value.ID); err == nil {
 			t.Fatal("source without build configuration succeeded")
 		}
 		value, err = m.Get(ctx, value.ID)

@@ -1,12 +1,17 @@
-{ lib, buildGoModule, git, vendorHash }:
+{ lib, buildGoModule, git, makeWrapper, libsecret, vendorHash }:
 buildGoModule {
-  pname = "chorusd";
-  version = "0.1.0";
+  pname = "vexd";
+  version = "0.3.0";
   src = lib.cleanSource ../controller;
   inherit vendorHash;
-  subPackages = [ "cmd/chorusd" "cmd/chorusctl" ];
+  subPackages = [ "cmd/vexd" "cmd/vex" ];
   ldflags = [ "-s" "-w" ];
   nativeCheckInputs = [ git ];
+  nativeBuildInputs = [ makeWrapper ];
+  postInstall = ''
+    wrapProgram "$out/bin/vex" --prefix PATH : ${lib.makeBinPath [ libsecret ]}
+  '';
+  VEX_API_DOCUMENT = ../docs/api.md;
   checkPhase = ''
     runHook preCheck
     unformatted=$(gofmt -l cmd internal)
@@ -18,8 +23,8 @@ buildGoModule {
     runHook postCheck
   '';
   meta = {
-    description = "Chorus room and build controller";
-    mainProgram = "chorusd";
+    description = "Vex project, room and build controller";
+    mainProgram = "vexd";
     platforms = lib.platforms.linux;
   };
 }

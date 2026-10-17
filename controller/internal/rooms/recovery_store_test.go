@@ -8,9 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/kube"
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
-	"github.com/imdomestic/chorus-testbed/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/model"
+	backend "github.com/imdomestic/vex/controller/internal/runtime"
+	"github.com/imdomestic/vex/controller/internal/store"
 )
 
 func TestReconcileErrorKeepsPersistedProgress(t *testing.T) {
@@ -19,10 +20,14 @@ func TestReconcileErrorKeepsPersistedProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	manager := &Manager{DB: db}
+	db, err = db.WithProject("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{Cfg: config.ProjectConfig{ID: "test"}, DB: db}
 	ctx := context.Background()
 	node := "encore"
-	room := model.Room{ID: "main-fabric", State: "starting", Phase: "creating server", Generation: 3, Node: &node}
+	room := model.Room{Project: "test", ID: "main-fabric", State: "starting", Phase: "creating server", Generation: 3, Node: &node}
 	runtime := Runtime{Generation: 3, WorldExists: true}
 	if err = manager.save(ctx, room, runtime); err != nil {
 		t.Fatal(err)
@@ -44,7 +49,7 @@ func TestReconcileErrorKeepsPersistedProgress(t *testing.T) {
 }
 
 func TestRoomDiagnosticsKeepCauseAndRemoveCredentials(t *testing.T) {
-	runtime := Runtime{Spec: &kube.RoomSpec{RoomToken: "room-token-sensitive", RCONPassword: "rcon-password-sensitive"}}
+	runtime := Runtime{Spec: &backend.RoomSpec{RoomToken: "room-token-sensitive", RCONPassword: "rcon-password-sensitive"}}
 	message := "Service ownership conflict: room-token-sensitive " + base64.StdEncoding.EncodeToString([]byte(runtime.Spec.RCONPassword)) + " https://controller/download?sig=signed-value&token=query-value Bearer header-value"
 	redacted := roomDiagnostic(message, runtime)
 	for _, secret := range []string{runtime.Spec.RoomToken, runtime.Spec.RCONPassword, "signed-value", "query-value", "header-value", base64.StdEncoding.EncodeToString([]byte(runtime.Spec.RCONPassword))} {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imdomestic/chorus-testbed/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/model"
 )
 
 func TestSnapshotRetentionProtectsRecentUnverifiedAndSeedReferences(t *testing.T) {
@@ -48,8 +48,8 @@ func TestArchivePathBoundaries(t *testing.T) {
 			t.Errorf("accepted invalid SSH target %q", value)
 		}
 	}
-	host, root, err := target("linwhite@tank:/srv/archive/chorus/it-20261015")
-	if err != nil || host != "linwhite@tank" || root != "/srv/archive/chorus/it-20261015" {
+	host, root, err := target("archive@storage:/srv/archive/vex/it-20261017")
+	if err != nil || host != "archive@storage" || root != "/srv/archive/vex/it-20261017" {
 		t.Fatal(host, root, err)
 	}
 }
