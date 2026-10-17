@@ -1716,7 +1716,7 @@
         "lastSnapshot": "2026-10-15T18:43:40.671945592Z",
         "lastError": null,
         "createdAt": "2026-10-14T18:22:16.893999266Z",
-        "updatedAt": "2026-10-17T16:13:49.157278329Z",
+        "updatedAt": "2026-10-17T18:58:56.243497778Z",
         "closedAt": null
       }
     }
@@ -1801,5 +1801,5 @@
     "/srv/chorus/snapshots/main-fabric/main-fabric-g9.tar.gz": "cfd650e0fc26633ebaaf797d5bc877d7a16887fc5eadce59b8acf87d48fb1dcb"
   },
   "sourceStateSHA256": "989cfa0d1eb1cdd7d84877435493f225cec04be44a7b54213d0a00a401b0bbe8",
-  "planSHA256": "51122c686d709648e3cba730fb442e5409c6f651192992f864c6bb9b6a71ef5c"
+  "planSHA256": "3f68af5216fbbb5da938f8a561c56f0fa60a575a5bfcefc161ce3f674233c3fe"
 }
