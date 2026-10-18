@@ -119,14 +119,40 @@ func (c Config) Validate() error {
 	if !filepath.IsAbs(c.Auth.AdminSocket) || len(c.Auth.AdminSocket) > 100 {
 		return fieldError("auth.admin_socket", "requires an absolute Unix socket path of at most 100 bytes")
 	}
+	for name, provider := range c.Auth.Providers {
+		if name != "github" || provider.Type != "github" || c.GitHub.App.ClientID == "" {
+			return fieldError("auth.providers", "requires github with github.app.client_id")
+		}
+	}
+	if c.GitHub.App.AppID != 0 || c.GitHub.App.ClientID != "" || c.GitHub.App.PrivateKeyFile != "" {
+		if c.GitHub.App.AppID <= 0 || c.GitHub.App.ClientID == "" || !filepath.IsAbs(c.GitHub.App.PrivateKeyFile) {
+			return fieldError("github.app", "requires positive app_id, client_id and absolute private_key_file")
+		}
+	}
+	if c.GitHub.App.WebhookSecretFile != "" {
+		return fieldError("github.app.webhook_secret_file", "CI pull uses polling; webhook delivery is not enabled")
+	}
+	if c.GitHub.App.ClientSecretFile != "" && !filepath.IsAbs(c.GitHub.App.ClientSecretFile) {
+		return fieldError("github.app.client_secret_file", "requires an absolute path")
+	}
+	if c.Wake.Enabled {
+		host, _, err := net.SplitHostPort(c.Wake.Endpoint)
+		if !validAddress(c.Wake.Listen) || !validAddress(c.Wake.Endpoint) || err != nil || net.ParseIP(host) == nil || net.ParseIP(host).IsUnspecified() {
+			return fieldError("wake", "requires listen and a routable IP:port endpoint")
+		}
+	}
 	for path, value := range map[string]string{
 		"auth.session_ttl": c.Auth.SessionTTL, "auth.invite_ttl": c.Auth.InviteTTL, "rooms.idle.commit": c.Rooms.Idle.Commit,
 		"rooms.idle.branch": c.Rooms.Idle.Branch, "rooms.idle.world": c.Rooms.Idle.World,
 		"rooms.join_lease": c.Rooms.JoinLease, "rooms.start_timeout": c.Rooms.StartTimeout,
+		"rooms.idle.pr": c.Rooms.Idle.PR, "wake.rate_limit": c.Wake.RateLimit,
 	} {
 		if err := positiveDuration(path, value); err != nil {
 			return err
 		}
+	}
+	if Duration(c.Wake.RateLimit) < time.Minute {
+		return fieldError("wake.rate_limit", "must be at least one minute")
 	}
 	if c.Build.MaxConcurrent != 1 || !filepath.IsAbs(c.Build.LockFile) {
 		return fieldError("build", "requires max_concurrent=1 and absolute lock_file")
@@ -206,14 +232,44 @@ func (c Config) validateProject(id string, p Project) error {
 	if p.Trust != "trusted" && p.Trust != "untrusted" {
 		return fieldError(path+".trust", "requires trusted or untrusted")
 	}
-	if p.Build.Source != "host" {
-		return fieldError(path+".build.source", "P1 requires host")
+	if p.Build.Source != "host" && p.Build.Source != "ci" {
+		return fieldError(path+".build.source", "requires host or ci")
 	}
-	if p.Minecraft.Version == "" || p.Minecraft.Java < 1 {
-		return fieldError(path+".minecraft", "requires version and a positive Java version")
-	}
-	if _, ok := c.Runtimes[fmt.Sprintf("java%d", p.Minecraft.Java)]; !ok {
+	if _, ok := c.Runtimes[fmt.Sprintf("java%d", p.Minecraft.Java)]; p.Minecraft.Java != 0 && !ok {
 		return fieldError(path+".minecraft.java", "runtime is not configured")
+	}
+	if p.ManifestFallback != "" && !filepath.IsAbs(p.ManifestFallback) {
+		return fieldError(path+".manifest_fallback", "requires an absolute path")
+	}
+	if p.GitHub.DeriveRoles {
+		return fieldError(path+".github.derive_roles", "repository-derived roles require P3")
+	}
+	if p.Policy.OnNewHead != "when_empty" && p.Policy.OnNewHead != "manual" {
+		return fieldError(path+".policy.on_new_head", "requires when_empty or manual")
+	}
+	if p.Build.Source == "ci" {
+		parts := strings.Split(p.GitHub.Repository, "/")
+		if len(parts) != 2 || !githubName.MatchString(parts[0]) || !githubName.MatchString(parts[1]) || c.GitHub.App.AppID <= 0 {
+			return fieldError(path+".github", "requires owner/repository and a configured GitHub App")
+		}
+		if p.CI.Mode != "pull" || !strings.HasPrefix(p.CI.Workflow, ".github/workflows/") || strings.Contains(p.CI.Workflow, "..") || strings.ContainsAny(p.CI.Workflow, "\\\r\n?#") || p.CI.Artifact == "" {
+			return fieldError(path+".ci", "requires pull mode, workflow path and artifact name")
+		}
+		if p.CI.ForkPreviews != "off" && p.CI.ForkPreviews != "approval" && p.CI.ForkPreviews != "auto" {
+			return fieldError(path+".ci.fork_previews", "requires off, approval or auto")
+		}
+		if p.CI.PreviewAccess != "members" && p.CI.PreviewAccess != "linked" && p.CI.PreviewAccess != "public" {
+			return fieldError(path+".ci.preview_access", "requires members, linked or public")
+		}
+		if err := positiveDuration(path+".ci.poll_interval", p.CI.PollInterval); err != nil {
+			return err
+		}
+		if p.CI.CommentLanguage != "en" && p.CI.CommentLanguage != "zh-CN" {
+			return fieldError(path+".ci.comment_language", "requires en or zh-CN")
+		}
+		if err := positiveDuration(path+".ci.pack_link_ttl", p.CI.PackLinkTTL); err != nil {
+			return err
+		}
 	}
 	if err := positiveDuration(path+".git.poll_interval", p.Git.PollInterval); err != nil {
 		return err
@@ -242,12 +298,9 @@ func (c Config) validateProject(id string, p Project) error {
 		if id != "fabric" && id != "neoforge" {
 			return fieldError(path+".loaders."+id, "P1 supports fabric and neoforge")
 		}
-		if loader.Enabled && (loader.GradleTask == "" || loader.ArtifactGlob == "" || loader.LoaderVersionProperty == "") {
-			return fieldError(path+".loaders."+id, "requires gradle_task, artifact_glob and loader_version_property")
-		}
 		if loader.Agent != "" {
 			agent, ok := c.Agents[loader.Agent]
-			if !ok || agent.Minecraft != p.Minecraft.Version || agent.Loader != id {
+			if !ok || (p.Minecraft.Version != "" && agent.Minecraft != p.Minecraft.Version) || agent.Loader != id {
 				return fieldError(path+".loaders."+id+".agent", "requires an agent for the same Minecraft and loader")
 			}
 		}
@@ -260,11 +313,6 @@ func (c Config) validateProject(id string, p Project) error {
 	for user, role := range p.Members {
 		if _, ok := c.Users[user]; !ok || !role.Allows(Viewer) {
 			return fieldError(path+".members", "requires configured users and owner, developer or viewer roles")
-		}
-	}
-	for _, entry := range p.Worlds.ExtraRootEntries {
-		if entry == "" || entry == "." || entry == ".." || strings.ContainsAny(entry, "/\\\x00") {
-			return fieldError(path+".worlds.extra_root_entries", "requires single root entry names")
 		}
 	}
 	return nil
@@ -297,6 +345,7 @@ func (c Client) Validate() error {
 }
 
 var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+var githubName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 func validDNSLabel(value string) bool {
 	return len(value) <= 63 && dnsLabelPattern.MatchString(value)

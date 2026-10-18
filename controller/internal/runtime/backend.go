@@ -24,6 +24,8 @@ type RoomSpec struct {
 	RCONPassword     string      `json:"rconPassword"`
 	ResourcePackURL  string      `json:"resourcePackURL"`
 	ResourcePackSHA1 string      `json:"resourcePackSHA1"`
+	Whitelist        []string    `json:"whitelist"`
+	EnforceWhitelist bool        `json:"enforceWhitelist"`
 }
 
 type RoomStatus struct {
@@ -57,6 +59,7 @@ type LogOptions struct {
 
 type ArchiveSpec struct {
 	Room      model.Room
+	Build     model.Build
 	Resource  ResourceRef
 	RoomToken string
 }

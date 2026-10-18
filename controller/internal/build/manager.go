@@ -46,7 +46,10 @@ func New(cfg config.ProjectConfig, db *store.Store, mirror *gitmirror.Mirror) (*
 
 func (m *Manager) Request(ctx context.Context, sha, loader string, force bool) (model.Build, bool, error) {
 	var result model.Build
-	if m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host" {
+	if m.cfg.Build.Source == "ci" && force {
+		return result, false, model.Failure("conflict", "rerun the configured workflow in GitHub to rebuild a CI project")
+	}
+	if m.cfg.Build.Source != "ci" && (m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host") {
 		return result, false, model.Failure("sandbox_unavailable", "host builds require a trusted project")
 	}
 	selected, ok := m.cfg.Loaders[loader]
@@ -90,7 +93,7 @@ func (m *Manager) Request(ctx context.Context, sha, loader string, force bool) (
 			return err
 		}
 		result = model.Build{
-			Project: m.cfg.ID, Source: model.BuildSource{Kind: "host"}, ID: id, SHA: sha, Loader: loader, Status: "queued", Attempt: attempt,
+			Project: m.cfg.ID, Source: model.BuildSource{Kind: m.cfg.Build.Source}, ID: id, SHA: sha, Loader: loader, Status: "queued", Attempt: attempt,
 			QueuedAt: time.Now().UTC(), ModIDs: []string{}, Files: []model.BuildFile{},
 			Log: m.apiPrefix() + "/builds/" + id + "/log",
 		}
@@ -248,6 +251,9 @@ func (m *Manager) step(ctx context.Context) error {
 	}
 	for i := len(values) - 1; i >= 0; i-- {
 		value := values[i]
+		if value.Source.Kind == "ci" {
+			continue
+		}
 		if value.Status != "queued" && value.Status != "building" {
 			continue
 		}

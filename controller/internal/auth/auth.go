@@ -298,3 +298,30 @@ func (a *Auth) User(id string) (model.User, bool) {
 	}
 	return user, true
 }
+
+func (a *Auth) MinecraftPlayers(project, access string) []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	players := map[string]bool{}
+	configured, exists := a.projects[project]
+	if !exists {
+		return []string{}
+	}
+	for _, player := range configured.Whitelist {
+		players[player] = true
+	}
+	for id, user := range a.users {
+		_, member := configured.Members[id]
+		if access == "linked" || user.Admin || member {
+			for _, player := range user.Minecraft {
+				players[player] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(players))
+	for player := range players {
+		result = append(result, player)
+	}
+	sort.Strings(result)
+	return result
+}

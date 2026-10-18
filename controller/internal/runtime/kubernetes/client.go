@@ -158,6 +158,16 @@ func (c *Client) ensureRoom(ctx context.Context, spec RoomSpec) error {
 			}
 		}
 		current.Spec.Ports, current.Spec.Selector = ports, service.Spec.Selector
+		wake, wakeErr := c.api.DiscoveryV1().EndpointSlices(c.ns).Get(ctx, service.Name+"-wake", metav1.GetOptions{})
+		if wakeErr != nil && !apierrors.IsNotFound(wakeErr) {
+			return wakeErr
+		}
+		if wakeErr == nil {
+			if !c.wakeOwned(wake, spec.Room.ID, current) {
+				return fmt.Errorf("wake EndpointSlice ownership conflicts")
+			}
+			current.Spec.Selector = nil
+		}
 		if equality.Semantic.DeepEqual(before, current) {
 			return nil
 		}
@@ -413,7 +423,7 @@ func (c *Client) Capacity(ctx context.Context) ([]model.Node, error) {
 		if !exists {
 			continue
 		}
-		n := model.Node{Name: node.Name, Roles: append([]string{}, configured.Roles...), Priority: configured.Priority, Schedulable: !node.Spec.Unschedulable, MaxRunning: configured.MaxRooms, Rooms: []string{}}
+		n := model.Node{Name: node.Name, Roles: append([]string{}, configured.Roles...), Priority: configured.Priority, Schedulable: roomNodeSchedulable(node, roomTolerations()), MaxRunning: configured.MaxRooms, Rooms: []string{}}
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady {
 				n.Ready = condition.Status == corev1.ConditionTrue

@@ -91,7 +91,7 @@ func resolveClient(global *pflag.FlagSet) (config.Resolved[config.Client], error
 	return config.LoadClient(config.Options{Args: args})
 }
 
-const usage = "usage: vex [--config FILE] [--server NAME] [-p PROJECT] login|logout|whoami|user|auth|config|health|meta|me|projects|nodes|git|builds|rooms|snapshots|world|pack|request"
+const usage = "usage: vex [--config FILE] [--server NAME] [-p PROJECT] login|logout|whoami|user|auth|github|config|health|meta|me|projects|nodes|git|builds|rooms|snapshots|world|pack|request"
 
 func run(ctx context.Context, args []string, output io.Writer) error {
 	return runWithInput(ctx, args, os.Stdin, output)
@@ -114,6 +114,9 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 	}
 	if args[0] == "login" || args[0] == "logout" || args[0] == "whoami" || args[0] == "auth" || args[0] == "user" {
 		return loginCommand(ctx, global, args, input, output)
+	}
+	if args[0] == "github" {
+		return githubCommand(ctx, global, args[1:], output)
 	}
 	if args[0] == "config" {
 		if len(args) < 2 || (args[1] != "show" && args[1] != "check") {

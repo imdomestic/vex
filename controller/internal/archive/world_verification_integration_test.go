@@ -15,6 +15,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
@@ -79,13 +80,15 @@ func realWorldVerification(t *testing.T, remote bool) {
 	m.Worlds = worldManager
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	document, manifestSHA := testfixture.Manifest(t)
+	policy := worlds.ManifestPolicy{SHA: manifestSHA, Document: document}
 	pack, _, err := worldManager.PublishPack(ctx, "verification", packFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	metadata.ID = "verified-plaza"
 	metadata.ResourcePack = &model.PackRef{ID: pack.ID, Rev: pack.Rev}
-	revision, _, err := worldManager.Publish(ctx, metadata, source)
+	revision, _, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || revision.TankVerifiedAt != nil {
 		t.Fatal("initial world publication failed", err)
 	}
@@ -156,7 +159,7 @@ func realWorldVerification(t *testing.T, remote bool) {
 	if err = os.Remove(metadataPath); err != nil {
 		t.Fatal(err)
 	}
-	again, created, err := worldManager.Publish(ctx, metadata, source)
+	again, created, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || created || again.TankVerifiedAt == nil || !again.TankVerifiedAt.Equal(latest) {
 		t.Fatal("idempotent publication changed verified revision", err)
 	}

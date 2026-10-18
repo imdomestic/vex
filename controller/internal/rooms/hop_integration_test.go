@@ -13,6 +13,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
@@ -51,12 +52,14 @@ func TestRealWorldDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.
 		t.Fatal(err)
 	}
 	cfg := config.ProjectConfig{ID: "world-test", DataDir: filepath.Join(root, "data"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: *build.Minecraft}}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}}
+	cfg.Loaders = map[string]config.Loader{build.Loader: {Enabled: true}}
 	worldManager, err := worlds.New(cfg, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, _, err = worldManager.Publish(ctx, metadata, archive); err != nil {
+	document, manifestSHA := testfixture.Manifest(t)
+	if _, _, err = worldManager.Publish(ctx, metadata, archive, worlds.ManifestPolicy{SHA: manifestSHA, Document: document}); err != nil {
 		t.Fatal(err)
 	}
 	world, err := worldManager.Get(ctx, metadata.ID)

@@ -25,6 +25,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
@@ -285,6 +286,10 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	}
 	now := time.Now().UTC()
 	snapshot := model.Snapshot{Project: cfg.ID, ID: "plaza-capture", RoomID: "plaza-it", RoomGeneration: 1, BuildID: "fabric-" + sourceSHA[:12], Minecraft: "26.3", CapturedAt: now, CreatedAt: now, SHA256: digest, Size: size, LocalAvailable: true}
+	document, manifestSHA := testfixture.Manifest(t)
+	policy := worlds.ManifestPolicy{SHA: manifestSHA, Document: document}
+	snapshot.BuildID = "fabric-" + manifestSHA[:12]
+	snapshot.ManifestSHA, snapshot.WorldExtraRootEntries = manifestSHA, append([]string{}, document.World.ExtraRootEntries...)
 	relative := path.Join("snapshots", snapshot.RoomID, snapshot.ID+".tar.gz")
 	snapshot.Path = relative
 	local := filepath.Join(cfg.DataDir, filepath.FromSlash(relative))
@@ -484,7 +489,7 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	}
 	m.Worlds = worldManager
 	metadata := model.WorldMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: sourceSHA, Scale: 1}}
-	revision, created, err := worldManager.Publish(ctx, metadata, source)
+	revision, created, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || !created || revision.Rev != "1" {
 		t.Fatalf("real world publish: %+v %t %v", revision, created, err)
 	}

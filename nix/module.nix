@@ -21,6 +21,9 @@ let
     (cfg.settings.runtime.kubernetes.kubeconfig_file or "/var/lib/vex/kubeconfig")
     (cfg.settings.archive.rsync_ssh.identity_file or "")
     (cfg.settings.archive.rsync_ssh.known_hosts_file or "")
+    (cfg.settings.github.app.private_key_file or "")
+    (cfg.settings.github.app.client_secret_file or "")
+    (cfg.settings.github.app.webhook_secret_file or "")
   ] ++ projectSecrets));
   common = {
     UMask = "0077";

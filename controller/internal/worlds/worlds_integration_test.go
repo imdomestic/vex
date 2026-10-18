@@ -17,6 +17,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
@@ -91,6 +92,8 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 		t.Skip("requires real world, scanner and source SHA environment variables")
 	}
 	ctx := context.Background()
+	document, manifestSHA := testfixture.Manifest(t)
+	policy := ManifestPolicy{SHA: manifestSHA, Document: document}
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -109,12 +112,12 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 	archive := filepath.Join(root, "plaza.tar.gz")
 	realWorldArchive(t, world, archive, gzip.BestSpeed)
 	metadata := model.WorldMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: commit, Scale: 1}}
-	first, created, err := m.Publish(ctx, metadata, archive)
+	first, created, err := m.Publish(ctx, metadata, archive, policy)
 	if err != nil || !created || first.Rev != "1" {
 		t.Fatalf("first publish: %+v %t %v", first, created, err)
 	}
 	metadata.Title = "幂等请求中的标题"
-	again, created, err := m.Publish(ctx, metadata, archive)
+	again, created, err := m.Publish(ctx, metadata, archive, policy)
 	if err != nil || created || !reflect.DeepEqual(first, again) {
 		t.Fatalf("idempotent publish changed revision: %+v %t %v", again, created, err)
 	}
@@ -137,14 +140,14 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 		t.Fatalf("local active restore: %+v %t %v", published, accepted, err)
 	}
 	metadata.Requires.Namespaces = []string{"missing-runtime"}
-	_, _, err = m.Publish(ctx, metadata, archive)
+	_, _, err = m.Publish(ctx, metadata, archive, policy)
 	if !errors.As(err, &failure) || failure.Code != "invalid_request" {
 		t.Fatalf("inaccurate namespaces accepted: %v", err)
 	}
 	metadata.Requires.Namespaces = []string{}
 	secondArchive := filepath.Join(root, "plaza-compressed.tar.gz")
 	realWorldArchive(t, world, secondArchive, gzip.BestCompression)
-	second, created, err := m.Publish(ctx, metadata, secondArchive)
+	second, created, err := m.Publish(ctx, metadata, secondArchive, policy)
 	if err != nil || !created || second.Rev != "2" || second.World.SHA256 == first.World.SHA256 {
 		t.Fatalf("new archive revision: %+v %t %v", second, created, err)
 	}

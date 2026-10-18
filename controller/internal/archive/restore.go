@@ -140,6 +140,9 @@ func (m *Manager) Download(ctx context.Context, remotePath, localPath, digest st
 }
 
 func (m *Manager) restoreSnapshotFile(ctx context.Context, snapshot model.Snapshot) error {
+	if snapshot.ManifestSHA == "" || snapshot.WorldExtraRootEntries == nil {
+		return fmt.Errorf("snapshot requires authoritative manifest metadata initialization")
+	}
 	relative := snapshot.Path
 	if !safeRelative(relative) {
 		return fmt.Errorf("snapshot relative path is invalid")
@@ -149,7 +152,7 @@ func (m *Manager) restoreSnapshotFile(ctx context.Context, snapshot model.Snapsh
 		return err
 	}
 	source := filepath.Join(m.cfg.DataDir, filepath.FromSlash(partial))
-	if err := worldarchive.Validate(source, snapshot.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err := worldarchive.Validate(source, snapshot.Minecraft, snapshot.WorldExtraRootEntries...); err != nil {
 		return err
 	}
 	destination := filepath.Join(m.cfg.DataDir, filepath.FromSlash(relative))

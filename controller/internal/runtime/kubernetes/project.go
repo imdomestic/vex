@@ -190,10 +190,13 @@ func (c *Client) projectObjects(ctx context.Context) (*corev1.ResourceQuota, *co
 	gamePort, dnsPort, apiPort := intstr.FromInt32(25565), intstr.FromInt32(53), intstr.FromInt32(int32(port))
 	policy := &networkingv1.NetworkPolicy{ObjectMeta: metadata, Spec: networkingv1.NetworkPolicySpec{
 		PodSelector: metav1.LabelSelector{}, PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
-		Ingress: []networkingv1.NetworkPolicyIngressRule{{From: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": c.cfg.Runtime.Kubernetes.SystemNamespace}},
-			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "mc-router", "app.kubernetes.io/part-of": "vex"}},
-		}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &gamePort}}}},
+		Ingress: []networkingv1.NetworkPolicyIngressRule{
+			{From: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": c.cfg.Runtime.Kubernetes.SystemNamespace}},
+				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "mc-router", "app.kubernetes.io/part-of": "vex"}},
+			}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &gamePort}}},
+			{From: apiPeers, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &gamePort}}},
+		},
 		Egress: []networkingv1.NetworkPolicyEgressRule{
 			{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dnsPort}, {Protocol: &tcp, Port: &dnsPort}}},
 			{To: apiPeers, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &apiPort}}},

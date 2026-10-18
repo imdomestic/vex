@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Server) refresh(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
+	if s.CI != nil {
+		s.CI.RequestRefresh()
+	}
 	if err := s.Rooms.Refresh(r.Context()); err != nil {
 		return err
 	}
@@ -152,7 +155,7 @@ func (s *Server) buildFile(w http.ResponseWriter, r *http.Request, id auth.Ident
 
 func (s *Server) roomList(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
 	q := r.URL.Query()
-	for key, allowed := range map[string]string{"kind": "branch commit world", "state": "stopped queued building starting ready stopping archiving closed failed lost"} {
+	for key, allowed := range map[string]string{"kind": "branch commit world pr", "state": "stopped queued building starting ready stopping archiving closed failed lost"} {
 		if value := q.Get(key); value != "" && !slices.Contains(strings.Fields(allowed), value) {
 			return model.Failure("invalid_request", "房间过滤条件无效")
 		}

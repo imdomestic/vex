@@ -45,6 +45,8 @@ type Runtime struct {
 	WorldExists          bool                `json:"worldExists"`
 	SeedRestoreRequested bool                `json:"seedRestoreRequested"`
 	ArchiveComplete      bool                `json:"archiveComplete"`
+	PendingSHA           string              `json:"pendingSha"`
+	PullClosed           bool                `json:"pullClosed"`
 }
 
 type Manager struct {
@@ -326,7 +328,7 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) resolveSeed(ctx context.Context, room model.Room, expression string) (*model.SeedResolved, error) {
-	if expression == "empty" {
+	if expression == "empty" || expression == "" {
 		return &model.SeedResolved{Kind: "empty"}, nil
 	}
 	kind, id, ok := strings.Cut(expression, ":")
@@ -381,6 +383,15 @@ func (m *Manager) resolveSeed(ctx context.Context, room model.Room, expression s
 }
 
 func (m *Manager) validateSeed(ctx context.Context, room model.Room, seed model.SeedResolved) (*model.SeedResolved, error) {
+	var target model.Build
+	err := m.DB.Get(ctx, "build", room.BuildID, &target)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	version := ""
+	if err == nil && target.Status == "ready" && target.Minecraft != nil {
+		version = *target.Minecraft
+	}
 	switch seed.Kind {
 	case "empty":
 		return &seed, nil
@@ -389,7 +400,7 @@ func (m *Manager) validateSeed(ctx context.Context, room model.Room, seed model.
 		if err := m.DB.Get(ctx, "snapshot", seed.ID, &snapshot); err != nil {
 			return nil, err
 		}
-		if snapshot.Minecraft != m.Cfg.Minecraft.Version {
+		if snapshot.Project != m.Cfg.ID || version != "" && snapshot.Minecraft != version {
 			return nil, model.Failure("invalid_request", "种子 Minecraft 版本不一致")
 		}
 	case "world":
@@ -397,7 +408,7 @@ func (m *Manager) validateSeed(ctx context.Context, room model.Room, seed model.
 		if err := m.DB.Get(ctx, "world_revision", seed.ID+":"+seed.Rev, &revision); err != nil {
 			return nil, err
 		}
-		if revision.Minecraft != m.Cfg.Minecraft.Version {
+		if revision.Project != m.Cfg.ID || version != "" && revision.Minecraft != version {
 			return nil, model.Failure("build_mismatch", "世界 Minecraft 版本不一致")
 		}
 		found := false
@@ -460,6 +471,12 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 	}
 	if !Active(room.State) {
 		cachedBranch := false
+		if room.Kind == "pr" {
+			room, err = m.pullStartRoom(ctx, room)
+			if err != nil {
+				return result, 0, err
+			}
+		}
 		if room.State == "failed" {
 			status, err := m.observe(ctx, room, rt)
 			if err != nil {
@@ -507,15 +524,20 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 				return result, 0, err
 			}
 		}
-		b, _, err := m.Builds.Request(ctx, room.SHA, room.Loader, false)
+		var b model.Build
+		if room.Kind == "pr" {
+			err = m.DB.Get(ctx, "build", room.BuildID, &b)
+		} else {
+			b, _, err = m.Builds.Request(ctx, room.SHA, room.Loader, false)
+		}
 		if err != nil {
 			return result, 0, err
 		}
 		if b.Status == "failed" {
 			return result, 0, model.Failure("build_failed", "构建失败，请显式重新构建后启动")
 		}
-		if room.SeedResolved != nil && room.SeedResolved.Kind == "world" && b.Status == "ready" {
-			if err = m.worldCompatible(ctx, *room.SeedResolved, b); err != nil {
+		if b.Status == "ready" {
+			if err = m.compatibleWorld(ctx, room, rt, b); err != nil {
 				return result, 0, err
 			}
 		}
@@ -632,7 +654,7 @@ func (m *Manager) Label(ctx context.Context, id, label string) (model.Room, int,
 	}
 	status := 200
 	if label == "finished" && room.State != "closed" {
-		if room.Generation == 0 || room.State == "stopped" {
+		if room.Generation == 0 || room.State == "stopped" && (room.Kind != "pr" || !rt.WorldExists) {
 			room.State = "closed"
 			room.Phase = "closed"
 		} else {
@@ -673,6 +695,12 @@ func randomSecret() (string, error) {
 
 func (m *Manager) makeSpec(ctx context.Context, room model.Room, b model.Build, node string) (runtime.RoomSpec, error) {
 	spec := runtime.RoomSpec{Room: room, Build: b, Node: node, Mods: []string{}}
+	access := "members"
+	if room.Kind == "pr" {
+		access = room.PreviewAccess
+	}
+	spec.Whitelist = m.Auth.MinecraftPlayers(m.Cfg.ID, access)
+	spec.EnforceWhitelist = access != "public"
 	expires := time.Now().Add(30 * 24 * time.Hour)
 	var err error
 	spec.RoomToken, err = m.Auth.RoomToken(m.Cfg.ID, room.ID, room.Generation, room.BuildID, expires)

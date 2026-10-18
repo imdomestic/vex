@@ -95,6 +95,7 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	if err != nil {
 		t.Fatal(err)
 	}
+	loadActualBuildManifest(t, source, mirrorPath, &manifest)
 	project := global.Projects[manifest.Project]
 	project.Members = map[string]config.Role{"integration": config.Owner}
 	project.Quota.MaxRooms, project.Quota.SnapshotKeep, project.Quota.SnapshotKeepDays = 1, 0, 0
@@ -151,7 +152,7 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	}
 	token := hex.EncodeToString(secret)
 	tokenHash := sha256.Sum256([]byte(token))
-	global.Users = map[string]config.User{"integration": {TokenSHA256: hex.EncodeToString(tokenHash[:])}}
+	global.Users = map[string]config.User{"integration": {TokenSHA256: hex.EncodeToString(tokenHash[:]), Minecraft: append([]string{}, source.Minecraft.Whitelist...)}}
 	global.Auth.SigningKeyFile = filepath.Join(root, "signing.key")
 	if _, err = rand.Read(secret); err != nil {
 		t.Fatal(err)

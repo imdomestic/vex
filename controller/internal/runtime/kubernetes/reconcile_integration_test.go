@@ -17,6 +17,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/rooms"
 	backend "github.com/imdomestic/vex/controller/internal/runtime/kubernetes"
 	"github.com/imdomestic/vex/controller/internal/slp"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -194,7 +195,11 @@ func TestRealRoomFailureIsolationRouteRecoveryAndCapacity(t *testing.T) {
 	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = h.manager.Worlds.Publish(h.ctx, metadata, os.Getenv("VEX_IT_WORLD_ARCHIVE")); err != nil {
+	document, err := h.manager.Builds.Manifest(h.ctx, h.manifest.SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = h.manager.Worlds.Publish(h.ctx, metadata, os.Getenv("VEX_IT_WORLD_ARCHIVE"), worlds.ManifestPolicy{SHA: h.manifest.SHA, Document: document}); err != nil {
 		t.Fatal(err)
 	}
 	next, _, err := h.manager.Create(h.ctx, "world", h.manifest.SHA, h.manifest.Loader, "", metadata.ID)

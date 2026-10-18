@@ -23,6 +23,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request, id auth.Identity
 
 func (s *Server) meta(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
 	methods := model.AuthMethods{Methods: []string{"invite"}}
+	if s.Device != nil {
+		methods.Methods = append(methods.Methods, "github")
+	}
 	if id.User == "" {
 		return respond(w, 200, struct {
 			Name    string            `json:"name"`

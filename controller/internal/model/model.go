@@ -17,40 +17,52 @@ type ErrorDetails struct {
 func Failure(code, message string) *Error { return &Error{Code: code, Message: message} }
 
 type BuildFile struct {
-	Name   string `json:"name"`
-	SHA1   string `json:"sha1"`
-	SHA256 string `json:"sha256"`
-	SHA512 string `json:"sha512"`
-	Size   int64  `json:"size"`
-	Side   string `json:"side"`
-	URL    string `json:"url"`
-	Path   string `json:"path"`
+	Name      string `json:"name"`
+	SHA1      string `json:"sha1"`
+	SHA256    string `json:"sha256"`
+	SHA512    string `json:"sha512"`
+	Size      int64  `json:"size"`
+	Side      string `json:"side"`
+	URL       string `json:"url"`
+	Path      string `json:"path"`
+	Origin    string `json:"origin,omitempty"`
+	SourceURL string `json:"sourceUrl,omitempty"`
 }
 
 type BuildSource struct {
-	Kind string `json:"kind"`
+	Kind       string `json:"kind"`
+	Repository string `json:"repository,omitempty"`
+	Workflow   string `json:"workflow,omitempty"`
+	RunID      int64  `json:"runId,omitempty"`
+	RunAttempt int    `json:"runAttempt,omitempty"`
+	PRNumber   int    `json:"prNumber,omitempty"`
+	Event      string `json:"event,omitempty"`
+	HTMLURL    string `json:"htmlUrl,omitempty"`
 }
 
 type Build struct {
-	Project       string      `json:"project"`
-	ID            string      `json:"id"`
-	Source        BuildSource `json:"source"`
-	SHA           string      `json:"sha"`
-	Loader        string      `json:"loader"`
-	Status        string      `json:"status"`
-	Attempt       int         `json:"attempt"`
-	QueuedAt      time.Time   `json:"queuedAt"`
-	StartedAt     *time.Time  `json:"startedAt"`
-	FinishedAt    *time.Time  `json:"finishedAt"`
-	Minecraft     *string     `json:"minecraft"`
-	LoaderVersion *string     `json:"loaderVersion"`
-	Java          *int        `json:"java"`
-	BuiltAt       *time.Time  `json:"builtAt"`
-	DurationSec   *float64    `json:"durationSec"`
-	ModIDs        []string    `json:"modIds"`
-	Files         []BuildFile `json:"files"`
-	Log           string      `json:"log"`
-	LastError     *Error      `json:"lastError"`
+	Project               string      `json:"project"`
+	ID                    string      `json:"id"`
+	Source                BuildSource `json:"source"`
+	SHA                   string      `json:"sha"`
+	Loader                string      `json:"loader"`
+	Status                string      `json:"status"`
+	Attempt               int         `json:"attempt"`
+	QueuedAt              time.Time   `json:"queuedAt"`
+	StartedAt             *time.Time  `json:"startedAt"`
+	FinishedAt            *time.Time  `json:"finishedAt"`
+	Minecraft             *string     `json:"minecraft"`
+	LoaderVersion         *string     `json:"loaderVersion"`
+	Java                  *int        `json:"java"`
+	BuiltAt               *time.Time  `json:"builtAt"`
+	DurationSec           *float64    `json:"durationSec"`
+	ModIDs                []string    `json:"modIds"`
+	Files                 []BuildFile `json:"files"`
+	Log                   string      `json:"log"`
+	LastError             *Error      `json:"lastError"`
+	ClientFingerprint     string      `json:"clientFingerprint"`
+	WorldExtraRootEntries []string    `json:"worldExtraRootEntries"`
+	RoomMemory            string      `json:"roomMemory"`
 }
 
 type BuildSummary struct {
@@ -89,31 +101,61 @@ type SeedResolved struct {
 }
 
 type Room struct {
-	Project      string        `json:"project"`
-	ID           string        `json:"id"`
-	Kind         string        `json:"kind"`
-	Branch       *string       `json:"branch"`
-	SHA          string        `json:"sha"`
-	Loader       string        `json:"loader"`
-	BuildID      string        `json:"buildId"`
-	Generation   int64         `json:"generation"`
-	BehindHead   bool          `json:"behindHead"`
-	Host         string        `json:"host"`
-	Port         int           `json:"port"`
-	State        string        `json:"state"`
-	Phase        string        `json:"phase"`
-	Label        string        `json:"label"`
-	Node         *string       `json:"node"`
-	Players      []Player      `json:"players"`
-	IdleSince    *time.Time    `json:"idleSince"`
-	Seed         string        `json:"seed"`
-	SeedResolved *SeedResolved `json:"seedResolved"`
-	World        *string       `json:"world"`
-	LastSnapshot *time.Time    `json:"lastSnapshot"`
-	LastError    *Error        `json:"lastError"`
-	CreatedAt    time.Time     `json:"createdAt"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
-	ClosedAt     *time.Time    `json:"closedAt"`
+	Project       string        `json:"project"`
+	ID            string        `json:"id"`
+	Kind          string        `json:"kind"`
+	Branch        *string       `json:"branch"`
+	SHA           string        `json:"sha"`
+	Loader        string        `json:"loader"`
+	BuildID       string        `json:"buildId"`
+	Generation    int64         `json:"generation"`
+	BehindHead    bool          `json:"behindHead"`
+	Host          string        `json:"host"`
+	Port          int           `json:"port"`
+	State         string        `json:"state"`
+	Phase         string        `json:"phase"`
+	Label         string        `json:"label"`
+	Node          *string       `json:"node"`
+	Players       []Player      `json:"players"`
+	IdleSince     *time.Time    `json:"idleSince"`
+	Seed          string        `json:"seed"`
+	SeedResolved  *SeedResolved `json:"seedResolved"`
+	World         *string       `json:"world"`
+	LastSnapshot  *time.Time    `json:"lastSnapshot"`
+	LastError     *Error        `json:"lastError"`
+	CreatedAt     time.Time     `json:"createdAt"`
+	UpdatedAt     time.Time     `json:"updatedAt"`
+	ClosedAt      *time.Time    `json:"closedAt"`
+	PR            *PullMetadata `json:"pr,omitempty"`
+	PullNumber    *int          `json:"pullNumber,omitempty"`
+	PreviewAccess string        `json:"previewAccess,omitempty"`
+}
+
+type PullMetadata struct {
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+	URL      string `json:"url"`
+	HeadSHA  string `json:"headSha"`
+	FromFork bool   `json:"fromFork"`
+}
+
+type Pull struct {
+	Project        string            `json:"project"`
+	Number         int               `json:"number"`
+	Title          string            `json:"title"`
+	URL            string            `json:"url"`
+	Author         string            `json:"author"`
+	State          string            `json:"state"`
+	Draft          bool              `json:"draft"`
+	HeadSHA        string            `json:"headSha"`
+	HeadRepository string            `json:"headRepository"`
+	BaseBranch     string            `json:"baseBranch"`
+	Fork           bool              `json:"fork"`
+	Approved       bool              `json:"approved"`
+	Rooms          map[string]string `json:"rooms"`
+	Builds         map[string]string `json:"builds"`
+	UpdatedAt      time.Time         `json:"updatedAt"`
 }
 
 type Lease struct {
@@ -247,12 +289,14 @@ type WorldFile struct {
 
 type WorldRevision struct {
 	WorldMetadata
-	Project        string     `json:"project"`
-	Rev            string     `json:"rev"`
-	SnapshotID     *string    `json:"snapshotId"`
-	World          WorldFile  `json:"world"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	TankVerifiedAt *time.Time `json:"tankVerifiedAt"`
+	ManifestSHA      string     `json:"manifestSha"`
+	ExtraRootEntries []string   `json:"extraRootEntries"`
+	Project          string     `json:"project"`
+	Rev              string     `json:"rev"`
+	SnapshotID       *string    `json:"snapshotId"`
+	World            WorldFile  `json:"world"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	TankVerifiedAt   *time.Time `json:"tankVerifiedAt"`
 }
 
 type World struct {
@@ -295,23 +339,25 @@ type WorldRestore struct {
 }
 
 type Snapshot struct {
-	Project        string     `json:"project"`
-	ID             string     `json:"id"`
-	RoomID         string     `json:"roomId"`
-	RoomGeneration int64      `json:"roomGeneration"`
-	BuildID        string     `json:"buildId"`
-	Minecraft      string     `json:"minecraft"`
-	World          *PackRef   `json:"world"`
-	CapturedAt     time.Time  `json:"capturedAt"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	SHA256         string     `json:"sha256"`
-	SHA1           string     `json:"sha1"`
-	SHA512         string     `json:"sha512"`
-	Path           string     `json:"path"`
-	Size           int64      `json:"size"`
-	LocalAvailable bool       `json:"localAvailable"`
-	TankVerifiedAt *time.Time `json:"tankVerifiedAt"`
-	Restore        *Restore   `json:"restore"`
+	Project               string     `json:"project"`
+	ID                    string     `json:"id"`
+	RoomID                string     `json:"roomId"`
+	RoomGeneration        int64      `json:"roomGeneration"`
+	BuildID               string     `json:"buildId"`
+	Minecraft             string     `json:"minecraft"`
+	ManifestSHA           string     `json:"manifestSha"`
+	WorldExtraRootEntries []string   `json:"worldExtraRootEntries"`
+	World                 *PackRef   `json:"world"`
+	CapturedAt            time.Time  `json:"capturedAt"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	SHA256                string     `json:"sha256"`
+	SHA1                  string     `json:"sha1"`
+	SHA512                string     `json:"sha512"`
+	Path                  string     `json:"path"`
+	Size                  int64      `json:"size"`
+	LocalAvailable        bool       `json:"localAvailable"`
+	TankVerifiedAt        *time.Time `json:"tankVerifiedAt"`
+	Restore               *Restore   `json:"restore"`
 }
 
 type HopDestination struct {

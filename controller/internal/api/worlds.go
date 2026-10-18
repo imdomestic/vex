@@ -11,6 +11,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/auth"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
+	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
@@ -92,7 +93,11 @@ func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Id
 	if err = file.Close(); err != nil {
 		return err
 	}
-	value, created, err := s.Rooms.Worlds.Publish(r.Context(), metadata, file.Name())
+	policy, err := s.Rooms.DefaultWorldManifest(r.Context())
+	if err != nil {
+		return err
+	}
+	value, created, err := s.Rooms.Worlds.Publish(r.Context(), metadata, file.Name(), policy)
 	if err != nil {
 		return err
 	}
@@ -110,7 +115,15 @@ func (s *Server) worldPromote(w http.ResponseWriter, r *http.Request, id auth.Id
 	if err := decode(r, &body, false); err != nil {
 		return err
 	}
-	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot)
+	var snapshot model.Snapshot
+	if err := s.DB.Get(r.Context(), "snapshot", body.Snapshot, &snapshot); err != nil {
+		return err
+	}
+	document, err := s.Builds.Manifest(r.Context(), snapshot.ManifestSHA)
+	if err != nil {
+		return err
+	}
+	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot, worlds.ManifestPolicy{SHA: snapshot.ManifestSHA, Document: document})
 	if err != nil {
 		return err
 	}

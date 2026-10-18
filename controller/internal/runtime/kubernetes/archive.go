@@ -39,6 +39,9 @@ func (c *Client) ArchiveWorld(ctx context.Context, spec runtime.ArchiveSpec) (ru
 	if room.Project != spec.Room.Project || room.ID != spec.Room.ID || room.Generation != spec.Room.Generation || room.BuildID != spec.Room.BuildID {
 		return runtime.ArchiveResult{}, fmt.Errorf("archive resource and room identities differ")
 	}
+	if spec.Build.ID != room.BuildID || spec.Build.Project != room.Project || spec.Build.Java == nil {
+		return runtime.ArchiveResult{}, fmt.Errorf("archive build does not match this room")
+	}
 	status, err := c.archive(ctx, spec)
 	if err != nil {
 		return runtime.ArchiveResult{}, err
@@ -76,6 +79,10 @@ func (c *Client) archive(ctx context.Context, spec runtime.ArchiveSpec) (Archive
 	if spec.Room.Generation < 1 || spec.RoomToken == "" {
 		return status, fmt.Errorf("archive requires room generation and credentials")
 	}
+	image := c.cfg.Runtimes[fmt.Sprintf("java%d", *spec.Build.Java)].ServerImage
+	if image == "" {
+		return status, fmt.Errorf("archive requires the build Java runtime image")
+	}
 	observed, err := c.verifyCurrent(ctx, spec.Resource)
 	if err != nil {
 		return status, err
@@ -105,7 +112,7 @@ func (c *Client) archive(ctx context.Context, spec runtime.ArchiveSpec) (Archive
 			PodFailurePolicy: &batchv1.PodFailurePolicy{Rules: []batchv1.PodFailurePolicyRule{{Action: batchv1.PodFailurePolicyActionFailJob, OnExitCodes: &batchv1.PodFailurePolicyOnExitCodesRequirement{Operator: batchv1.PodFailurePolicyOnExitCodesOpIn, Values: []int32{42}}}}},
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever, AutomountServiceAccountToken: &automount,
-				Containers: []corev1.Container{{Name: "archive", Image: c.cfg.Minecraft.Image,
+				Containers: []corev1.Container{{Name: "archive", Image: image,
 					Command:      []string{"/bin/bash", "-euo", "pipefail", "-c", archiveScript},
 					Env:          []corev1.EnvVar{{Name: "TMPDIR", Value: "/data/.work"}, {Name: "GENERATION", Value: strconv.FormatInt(spec.Room.Generation, 10)}, {Name: "UPLOAD_URL", Value: c.cfg.Server.InternalBaseURL + "/v2/projects/" + c.cfg.ID + "/snapshots?" + query.Encode()}, secretEnv("VEX_ROOM_TOKEN", name+"-credentials", "room-token")},
 					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}},
@@ -216,9 +223,6 @@ func (c *Client) DeleteRoom(ctx context.Context, ref runtime.ResourceRef, option
 		if !complete {
 			return fmt.Errorf("archive Job has not completed")
 		}
-		if options.KeepWorld {
-			return nil
-		}
 		ttl := int32(1)
 		if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != ttl {
 			job.Spec.TTLSecondsAfterFinished = &ttl
@@ -275,6 +279,9 @@ func (c *Client) DeleteRoom(ctx context.Context, ref runtime.ResourceRef, option
 			}
 			if !c.managed(object.Labels, room.ID) {
 				return fmt.Errorf("Service is not owned by this room")
+			}
+			if err = c.deleteWakeSlice(ctx, room.ID, object); err != nil {
+				return err
 			}
 			err = c.api.CoreV1().Services(c.ns).Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &object.UID}})
 		} else {

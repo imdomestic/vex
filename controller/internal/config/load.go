@@ -71,10 +71,11 @@ func Defaults() Config {
 		}},
 		Runtimes: map[string]JavaRuntime{}, Agents: map[string]Agent{},
 		Archive: Archive{Backend: "local", Local: LocalArchive{Directory: "/var/lib/vex/archive"}},
-		Auth:    Auth{SigningKeyFile: "/var/lib/vex/secrets/signing.key", SessionTTL: "2160h", InviteTTL: "24h", AdminSocket: "/run/vex/admin.sock"},
+		Auth:    Auth{SigningKeyFile: "/var/lib/vex/secrets/signing.key", SessionTTL: "2160h", InviteTTL: "24h", AdminSocket: "/run/vex/admin.sock", Providers: map[string]AuthProvider{}},
+		Wake:    Wake{RateLimit: "1m"},
 		Users:   map[string]User{}, Projects: map[string]Project{},
 		Build: Build{MaxConcurrent: 1, LockFile: "/var/lib/vex/build.lock"},
-		Rooms: Rooms{Idle: Idle{Commit: "10m", Branch: "10m", World: "10m"}, JoinLease: "3m", StartTimeout: "5m", Heap: "4G", DefaultSeed: "empty"},
+		Rooms: Rooms{Idle: Idle{Commit: "10m", Branch: "10m", World: "10m", PR: "10m"}, JoinLease: "3m", StartTimeout: "5m", Heap: "4G", DefaultSeed: "empty"},
 	}
 }
 
@@ -84,7 +85,8 @@ func defaultProject() Project {
 		Build:   ProjectBuild{Source: "host", Timeout: "20m", GradleArgs: []string{}},
 		Loaders: map[string]Loader{}, Members: map[string]Role{}, Whitelist: []string{},
 		Quota:  Quota{MaxRooms: 4, RoomMemoryMax: "5Gi", BuildCache: 20, SnapshotKeep: 5, SnapshotKeepDays: 14},
-		Worlds: ProjectWorlds{ExtraRootEntries: []string{}},
+		CI:     ProjectCI{Mode: "pull", Workflow: ".github/workflows/vex.yml", Artifact: "vex-build", PollInterval: "60s", ForkPreviews: "approval", PreviewAccess: "members", CommentLanguage: "en", PackLinkTTL: "168h"},
+		Policy: ProjectPolicy{OnNewHead: "when_empty"},
 	}
 }
 
@@ -97,6 +99,9 @@ func LoadDaemon(options Options) (Resolved[Config], error) {
 		return result, err
 	}
 	result.Config.Path = result.Path
+	result.Config.Wake.Listen = result.Config.Server.WakeListen
+	result.Config.Wake.Endpoint = result.Config.Server.WakeListen
+	result.Config.Wake.Enabled = result.Config.Server.WakeListen != ""
 	return result, result.Config.Validate()
 }
 
@@ -257,7 +262,7 @@ func validateLayer(schema reflect.Type, value any, path string) error {
 		if _, ok := value.(bool); !ok {
 			return fieldError(path, "requires a boolean")
 		}
-	case reflect.Int:
+	case reflect.Int, reflect.Int64:
 		if reflect.TypeOf(value).Kind() != reflect.Int64 && reflect.TypeOf(value).Kind() != reflect.Int {
 			return fieldError(path, "requires an integer")
 		}

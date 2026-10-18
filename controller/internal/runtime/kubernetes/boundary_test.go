@@ -102,11 +102,15 @@ func TestProjectPolicyPortAndMemoryBoundaries(t *testing.T) {
 	if memory.Value() != 10<<30 || len(limits.Spec.Limits) != 1 {
 		t.Fatal("project memory quota differs")
 	}
-	if len(policy.Spec.Ingress) != 1 || len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != 25565 {
+	if len(policy.Spec.Ingress) != 2 || len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != 25565 {
 		t.Fatal("room ingress permits unexpected ports")
 	}
 	if policy.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "instance-system" {
 		t.Fatal("router ingress does not use the configured system namespace")
+	}
+	probe := policy.Spec.Ingress[1]
+	if len(probe.From) != 1 || probe.From[0].IPBlock == nil || probe.From[0].IPBlock.CIDR != "10.1.2.137/32" || len(probe.Ports) != 1 || probe.Ports[0].Port.IntVal != 25565 {
+		t.Fatal("controller status ingress is not restricted to its endpoint and game port")
 	}
 	api := policy.Spec.Egress[1]
 	if len(api.To) != 1 || api.To[0].IPBlock.CIDR != "10.1.2.137/32" || len(api.Ports) != 1 || api.Ports[0].Port.IntVal != 8790 {

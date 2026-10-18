@@ -112,7 +112,7 @@ func TestRealEULAAcceptanceStartsMinecraftAndArchives(t *testing.T) {
 	if err != nil || digest != snapshot.SHA256 || size != snapshot.Size || size == 0 {
 		t.Fatal("actual world snapshot differs from its recorded checksum", err)
 	}
-	if err = worldarchive.Validate(path, *h.manifest.Minecraft, h.cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err = worldarchive.Validate(path, *h.manifest.Minecraft, h.manifest.WorldExtraRootEntries...); err != nil {
 		t.Fatal("actual stopped Minecraft world archive is invalid", err)
 	}
 	if err = manager.Archive.Step(h.ctx); err != nil {

@@ -160,20 +160,23 @@ func (m *Manager) queueRevision(ctx context.Context, tx *store.Tx, value model.W
 	return nil
 }
 
-func (m *Manager) Publish(ctx context.Context, metadata model.WorldMetadata, source string) (model.WorldRevision, bool, error) {
-	return m.publish(ctx, metadata, source, nil, metadata.Requires.Namespaces != nil)
+func (m *Manager) Publish(ctx context.Context, metadata model.WorldMetadata, source string, policy ManifestPolicy) (model.WorldRevision, bool, error) {
+	return m.publish(ctx, metadata, source, nil, metadata.Requires.Namespaces != nil, policy)
 }
 
-func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, source string, snapshotID *string, declaredNamespaces bool) (model.WorldRevision, bool, error) {
+func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, source string, snapshotID *string, declaredNamespaces bool, policy ManifestPolicy) (model.WorldRevision, bool, error) {
 	var result model.WorldRevision
-	metadata, err := m.metadata(metadata)
+	if err := policy.Validate(); err != nil {
+		return result, false, err
+	}
+	metadata, err := m.metadata(metadata, policy)
 	if err != nil {
 		return result, false, err
 	}
 	if err = worldarchive.Space(m.cfg.DataDir); err != nil {
 		return result, false, err
 	}
-	if err = worldarchive.Validate(source, metadata.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err = worldarchive.Validate(source, metadata.Minecraft, policy.Document.World.ExtraRootEntries...); err != nil {
 		return result, false, model.Failure("invalid_request", err.Error())
 	}
 	namespaces, err := m.scan(ctx, source, metadata.Minecraft)
@@ -204,6 +207,9 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 				return err
 			}
 			if result.World.SHA256 == digest {
+				if err = revisionPolicyRecorded(result); err != nil {
+					return err
+				}
 				valid, err := intact(m.absolute(result.World.Path), digest, size)
 				if err != nil {
 					return err
@@ -244,6 +250,7 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 		}
 		revision := strconv.Itoa(number)
 		result = model.WorldRevision{Project: m.cfg.ID, WorldMetadata: metadata, Rev: revision, SnapshotID: snapshotID, World: model.WorldFile{SHA256: digest, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Path: WorldPath(metadata.ID, revision), Size: size, URL: downloadURL(m.cfg.ID, metadata.ID, revision)}, CreatedAt: time.Now().UTC()}
+		result.ManifestSHA, result.ExtraRootEntries = policy.SHA, append([]string{}, policy.Document.World.ExtraRootEntries...)
 		if err = copyImmutable(source, m.absolute(WorldPath(metadata.ID, revision)), digest, size); err != nil {
 			return err
 		}
@@ -266,7 +273,7 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 	return result, created, err
 }
 
-func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.WorldRevision, bool, error) {
+func (m *Manager) Promote(ctx context.Context, id, snapshotID string, policy ManifestPolicy) (model.WorldRevision, bool, error) {
 	var result model.WorldRevision
 	if !config.ValidID(id) {
 		return result, false, model.Failure("invalid_request", "world ID is invalid")
@@ -274,6 +281,12 @@ func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.Wor
 	var snapshot model.Snapshot
 	if err := m.db.Get(ctx, "snapshot", snapshotID, &snapshot); err != nil {
 		return result, false, missing(err)
+	}
+	if err := policy.Validate(); err != nil {
+		return result, false, err
+	}
+	if snapshot.Project != m.cfg.ID || !policy.MatchesSnapshot(snapshot) {
+		return result, false, model.Failure("build_mismatch", "snapshot world policy differs from its authoritative manifest")
 	}
 	if snapshot.World == nil || snapshot.World.ID != id {
 		return result, false, model.Failure("invalid_request", "snapshot was not captured from this world")
@@ -296,7 +309,7 @@ func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.Wor
 	if !valid {
 		return result, false, model.Failure("archive_failed", "snapshot checksum differs from its published metadata")
 	}
-	return m.publish(ctx, origin.WorldMetadata, source, &snapshotID, false)
+	return m.publish(ctx, origin.WorldMetadata, source, &snapshotID, false, policy)
 }
 
 func validatePack(filename string) error {
