@@ -9,11 +9,23 @@
 - 普通 JSON 请求最多读取 1 MiB，拒绝未知字段和多个顶层 JSON 值。只有明确注明可空的端点接受空请求体；其余请求提供表中的 JSON 对象。JSON 响应带 `Cache-Control: no-store`。
 - 列表直接返回数组。除提交历史使用 `before` 以外，当前列表没有分页游标。
 - SHA 使用小写十六进制。提交 SHA 为完整的 40 个字符；文件 SHA-1、SHA-256、SHA-512 分别为 40、64、128 个字符，均根据实际入库字节计算。
-- `url`、`log` 是 API 相对路径，可相对于 `Meta.publicBaseURL` 使用；`path` 是项目数据目录内的相对路径，供归档与文件定位使用。客户端通过 HTTP 下载文件。
+- `url`、`log` 是 API 相对路径，可相对于 `Meta.publicBaseURL` 使用；`path` 是项目数据目录内的相对路径，供归档与文件定位使用。公开客户端使用 HTTPS，房间 Pod 可以通过受限的内部 HTTP 入口下载文件。
 - JAR、世界归档、资源包分别返回 `application/java-archive`、`application/gzip`、`application/zip`；文件响应支持 HTTP Range。日志返回 `text/plain; charset=utf-8`，已隐藏 Bearer 凭据和 URL 的 `sig/token` 值。
 - 项目、世界和资源包 ID 采用 `^[a-z][a-z0-9-]{0,22}$`，禁止 `--` 和末尾 `-`。房间主机名为 `<roomId>--<project>.<zone>`，组合后的第一个 DNS label 最长 63 个字符。
 
 ## 认证和权限
+
+### 监听器与 TLS
+
+`server.listeners` 是 `{address,tls,scope}` 数组。`scope` 必须为 `public` 或 `internal`；TLS 监听器使用 `server.tls_cert_file` 与 `server.tls_key_file` 指定的绝对路径。旧的 `server.listen` 地址列表仍受支持，配置证书时该列表全部启用 TLS；两种列表不能同时显式配置。默认 loopback 地址会被显式 listeners 替代。
+
+服务启动时校验证书和私钥。每次完整 TLS 握手重新读取文件并检查匹配及有效期，文件变化不需要重启进程；无效的替换文件导致该次握手失败。SIGHUP 立即执行同样的校验并记录结果，NixOS 服务通过 `systemctl reload vexd` 提供入口。已有连接继续由原连接管理，API 和 SSE 不因证书重新读取而关闭。
+
+`internal` 入口在路由鉴权前检查真实连接来源：本机访问、实际 mc-router Pod，以及所属项目 namespace 内由平台 StatefulSet 管理的房间 Pod。房间初始化容器使用的 Pending Pod 也可访问；无关 Pod 或其他机器返回 403。来源检查错误返回 500。请求的 Bearer、签名 URL 与项目权限仍须单独验证，转发头不改变来源判定。宿主防火墙和项目 NetworkPolicy 同时限制内部 HTTP 的网络访问。
+
+`server.public_base_url` 决定公开元数据、邀请及对外文件链接的地址。切换 HTTPS 后，客户端使用新地址与重新签发的链接。服务器不通过明文入口重定向用户凭据。内部房间下载使用 `server.internal_base_url`，其地址和路由权限保持独立。
+
+### 用户与房间身份
 
 用户请求携带 `Authorization: Bearer <credential>`。P1 人工登录使用一次性邀请，成功后签发 32 字节随机数的 base64url 会话凭据，数据库仅保存 SHA256。静态 `token_sha256` 供服务账号使用，与会话凭据共用 Bearer 入口。会话每次通过认证后更新 lastUsedAt，并将 expiresAt 顺延 auth.session_ttl；吊销后立即失效。API 不返回凭据摘要。签名密钥从 `auth.signing_key_file` 读取。
 

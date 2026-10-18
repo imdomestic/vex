@@ -7,6 +7,16 @@ data_dir = "/var/lib/vex"
 zone = "vex.internal"
 router_address = "127.0.0.1:25565"
 
+# 使用分监听器配置时，删除 listen，并按部署环境指定证书和内部地址。
+# tls_cert_file = "/var/lib/acme/vex.example.com/fullchain.pem"
+# tls_key_file = "/var/lib/acme/vex.example.com/key.pem"
+# listeners = [
+#   { address = "100.64.0.1:8790", tls = true, scope = "public" },
+#   { address = "10.0.0.1:8790", tls = false, scope = "internal" }
+# ]
+# public_base_url = "https://vex.example.com:8790"
+# internal_base_url = "http://10.0.0.1:8790"
+
 [minecraft]
 accept_eula = false
 

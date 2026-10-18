@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/slp"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/supervisor"
+	"github.com/imdomestic/vex/controller/internal/transport"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
@@ -146,6 +148,7 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 		return err
 	}
 	var routerSource func(context.Context, string) (bool, error)
+	roomSources := []func(context.Context, string) (bool, error){}
 	for _, id := range projectIDs {
 		project, err := cfg.ForProject(id)
 		if err != nil {
@@ -172,6 +175,7 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			return err
 		}
 		routerSource = backend.RouterSource
+		roomSources = append(roomSources, backend.RoomSource)
 		manager := rooms.New(project, scoped, mirror, builder, backend, backend, authenticator, bus)
 		if err = manager.InitializeRecords(ctx); err != nil {
 			return err
@@ -197,7 +201,36 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 	}
 	service := api.New(cfg, projects, authenticator, bus)
 	service.RouterSource = routerSource
-	errorsChannel := make(chan error, len(cfg.Server.Listen)+1)
+	internalSource := func(ctx context.Context, source string) (bool, error) {
+		if routerSource != nil {
+			allowed, err := routerSource(ctx, source)
+			if err != nil || allowed {
+				return allowed, err
+			}
+		}
+		for _, allowedSource := range roomSources {
+			allowed, err := allowedSource(ctx, source)
+			if err != nil || allowed {
+				return allowed, err
+			}
+		}
+		return false, nil
+	}
+	var tlsConfig *tls.Config
+	var reload <-chan os.Signal
+	certificateFiles := transport.CertificateFiles{Certificate: cfg.Server.TLSCertFile, Key: cfg.Server.TLSKeyFile}
+	if cfg.Server.TLSCertFile != "" {
+		tlsConfig, err = certificateFiles.Config()
+		if err != nil {
+			return err
+		}
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGHUP)
+		defer signal.Stop(signals)
+		reload = signals
+	}
+	endpoints := cfg.Server.Endpoints()
+	errorsChannel := make(chan error, len(endpoints)+1)
 	servers := []*http.Server{}
 	listeners := []net.Listener{}
 	group, err := user.LookupGroup("vex-admin")
@@ -221,8 +254,8 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			errorsChannel <- err
 		}
 	}()
-	for _, address := range cfg.Server.Listen {
-		listener, err := net.Listen("tcp", address)
+	for _, endpoint := range endpoints {
+		listener, err := net.Listen("tcp", endpoint.Address)
 		if err != nil {
 			for _, open := range listeners {
 				open.Close()
@@ -230,23 +263,43 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			return err
 		}
 		listeners = append(listeners, listener)
-		httpServer := newHTTPServer(ctx, service.Handler())
+		handler := service.Handler()
+		if endpoint.Scope == "internal" {
+			handler = service.InternalHandler(internalSource)
+		}
+		httpServer := newHTTPServer(ctx, handler)
+		if endpoint.TLS {
+			httpServer.TLSConfig = tlsConfig.Clone()
+		}
 		servers = append(servers, httpServer)
 		go func() {
-			err := httpServer.Serve(listener)
+			var err error
+			if endpoint.TLS {
+				err = httpServer.ServeTLS(listener, "", "")
+			} else {
+				err = httpServer.Serve(listener)
+			}
 			if !errors.Is(err, http.ErrServerClosed) {
 				errorsChannel <- err
 			}
 		}()
-		slog.Info("vexd listening", "address", address)
+		slog.Info("vexd listening", "address", endpoint.Address, "tls", endpoint.TLS, "scope", endpoint.Scope)
 	}
 	for _, operation := range loops {
 		go supervisor.Run(ctx, operation.name, operation.run)
 	}
 	var runErr error
-	select {
-	case <-ctx.Done():
-	case runErr = <-errorsChannel:
+	for ctx.Err() == nil && runErr == nil {
+		select {
+		case <-ctx.Done():
+		case runErr = <-errorsChannel:
+		case <-reload:
+			if _, err := certificateFiles.Load(); err != nil {
+				slog.Error("TLS certificate reload failed", "error", err)
+			} else {
+				slog.Info("TLS certificate reloaded")
+			}
+		}
 	}
 	cancel()
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)

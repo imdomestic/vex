@@ -26,13 +26,33 @@ type Config struct {
 }
 
 type Server struct {
-	Name            string   `toml:"name"`
-	Listen          []string `toml:"listen"`
-	PublicBaseURL   string   `toml:"public_base_url"`
-	InternalBaseURL string   `toml:"internal_base_url"`
-	DataDir         string   `toml:"data_dir"`
-	Zone            string   `toml:"zone"`
-	RouterAddress   string   `toml:"router_address"`
+	Name            string     `toml:"name"`
+	Listen          []string   `toml:"listen"`
+	Listeners       []Listener `toml:"listeners"`
+	TLSCertFile     string     `toml:"tls_cert_file"`
+	TLSKeyFile      string     `toml:"tls_key_file"`
+	PublicBaseURL   string     `toml:"public_base_url"`
+	InternalBaseURL string     `toml:"internal_base_url"`
+	DataDir         string     `toml:"data_dir"`
+	Zone            string     `toml:"zone"`
+	RouterAddress   string     `toml:"router_address"`
+}
+
+type Listener struct {
+	Address string `toml:"address"`
+	TLS     bool   `toml:"tls"`
+	Scope   string `toml:"scope"`
+}
+
+func (s Server) Endpoints() []Listener {
+	if len(s.Listeners) != 0 {
+		return s.Listeners
+	}
+	result := make([]Listener, 0, len(s.Listen))
+	for _, address := range s.Listen {
+		result = append(result, Listener{Address: address, TLS: s.TLSCertFile != "", Scope: "public"})
+	}
+	return result
 }
 
 type Minecraft struct {

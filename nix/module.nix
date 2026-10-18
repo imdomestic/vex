@@ -21,6 +21,7 @@ let
     (cfg.settings.runtime.kubernetes.kubeconfig_file or "/var/lib/vex/kubeconfig")
     (cfg.settings.archive.rsync_ssh.identity_file or "")
     (cfg.settings.archive.rsync_ssh.known_hosts_file or "")
+    (cfg.settings.server.tls_key_file or "")
   ] ++ projectSecrets));
   common = {
     UMask = "0077";
@@ -168,6 +169,8 @@ in
         ReadWritePaths = [ dataDir "/var/lib/vex" adminDirectory ];
         Type = "simple";
         ExecStart = "${executable} serve --config /etc/vex/vexd.toml";
+        ExecReload = lib.mkIf ((cfg.settings.server.tls_cert_file or "") != "")
+          "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         WorkingDirectory = dataDir;
         Restart = "on-failure";
         RestartSec = 5;

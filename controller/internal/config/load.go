@@ -97,6 +97,9 @@ func LoadDaemon(options Options) (Resolved[Config], error) {
 		return result, err
 	}
 	result.Config.Path = result.Path
+	if len(result.Config.Server.Listeners) != 0 && result.Sources["server.listen"].Layer == "default" {
+		result.Config.Server.Listen = nil
+	}
 	return result, result.Config.Validate()
 }
 
