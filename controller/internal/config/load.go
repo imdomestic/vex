@@ -102,6 +102,9 @@ func LoadDaemon(options Options) (Resolved[Config], error) {
 	result.Config.Wake.Listen = result.Config.Server.WakeListen
 	result.Config.Wake.Endpoint = result.Config.Server.WakeListen
 	result.Config.Wake.Enabled = result.Config.Server.WakeListen != ""
+	if len(result.Config.Server.Listeners) != 0 && result.Sources["server.listen"].Layer == "default" {
+		result.Config.Server.Listen = nil
+	}
 	return result, result.Config.Validate()
 }
 

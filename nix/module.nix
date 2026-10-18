@@ -24,6 +24,7 @@ let
     (cfg.settings.github.app.private_key_file or "")
     (cfg.settings.github.app.client_secret_file or "")
     (cfg.settings.github.app.webhook_secret_file or "")
+    (cfg.settings.server.tls_key_file or "")
   ] ++ projectSecrets));
   common = {
     UMask = "0077";
@@ -171,6 +172,8 @@ in
         ReadWritePaths = [ dataDir "/var/lib/vex" adminDirectory ];
         Type = "simple";
         ExecStart = "${executable} serve --config /etc/vex/vexd.toml";
+        ExecReload = lib.mkIf ((cfg.settings.server.tls_cert_file or "") != "")
+          "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         WorkingDirectory = dataDir;
         Restart = "on-failure";
         RestartSec = 5;

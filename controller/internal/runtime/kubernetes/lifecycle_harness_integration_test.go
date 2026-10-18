@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +53,7 @@ type lifecycleHarness struct {
 	root     string
 	baseURL  string
 	token    string
+	sources  *sync.Map
 }
 
 func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarness {
@@ -288,14 +290,32 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	}
 	manager.Archive.Worlds = manager.Worlds
 	projectServer := &api.Server{Cfg: cfg, DB: db, Git: mirror, Builds: builder, Rooms: manager}
-	server := &http.Server{Handler: api.New(global, map[string]*api.Server{projectID: projectServer}, credentials, bus).Handler(), ReadHeaderTimeout: 10 * time.Second}
+	application := api.New(global, map[string]*api.Server{projectID: projectServer}, credentials, bus)
+	handler := application.Handler()
+	sources := &sync.Map{}
+	if purpose == "s1source" {
+		handler = application.InternalHandler(func(ctx context.Context, address string) (bool, error) {
+			allowed, err := client.RoomSource(ctx, address)
+			if allowed && err == nil {
+				pods, queryErr := cluster.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{FieldSelector: "status.podIP=" + address})
+				if queryErr != nil {
+					return false, queryErr
+				}
+				for _, pod := range pods.Items {
+					sources.Store(address, pod.Labels["app.kubernetes.io/component"])
+				}
+			}
+			return allowed, err
+		})
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	t.Cleanup(func() { server.Close() })
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Errorf("actual API server: %v", err)
 		}
 	}()
-	return &lifecycleHarness{t: t, ctx: ctx, cfg: cfg, manager: manager, backend: client, cluster: cluster, db: db, manifest: manifest, ns: ns, root: root, baseURL: baseURL, token: token}
+	return &lifecycleHarness{t: t, ctx: ctx, cfg: cfg, manager: manager, backend: client, cluster: cluster, db: db, manifest: manifest, ns: ns, root: root, baseURL: baseURL, token: token, sources: sources}
 }
 
 func (h *lifecycleHarness) wait(label string, timeout time.Duration, check func() bool) {

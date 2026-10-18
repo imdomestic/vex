@@ -7,6 +7,16 @@ data_dir = "/var/lib/vex"
 zone = "vex.internal"
 router_address = "127.0.0.1:25565"
 
+# 使用分监听器配置时，删除 listen，并按部署环境指定证书和内部地址。
+# tls_cert_file = "/var/lib/acme/vex.example.com/fullchain.pem"
+# tls_key_file = "/var/lib/acme/vex.example.com/key.pem"
+# listeners = [
+#   { address = "100.64.0.1:8790", tls = true, scope = "public" },
+#   { address = "10.0.0.1:8790", tls = false, scope = "internal" }
+# ]
+# public_base_url = "https://vex.example.com:8790"
+# internal_base_url = "http://10.0.0.1:8790"
+
 [minecraft]
 accept_eula = false
 
@@ -75,16 +85,9 @@ gradle_args = []
 
 [projects.example.loaders.fabric]
 enabled = true
-gradle_task = "build"
-artifact_glob = "build/libs/*.jar"
-artifact_exclude = ["*-sources.jar", "*-dev*.jar", "*-javadoc.jar"]
-loader_version_property = "fabric_loader_version"
 agent = "fabric-26-3"
 
-[[projects.example.loaders.fabric.deps]]
-name = "fabric-api"
-url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/${fabric_version}/fabric-api-${fabric_version}.jar"
-side = "both"
+# 构建命令、产物、依赖和额外世界目录由提交中的 vex.toml 提供。
 
 [projects.example.members]
 operator = "owner"
@@ -110,6 +113,7 @@ default_seed = "empty"
 branch = "10m"
 commit = "10m"
 world = "10m"
+pr = "10m"
 
 [worlds]
 scanner_file = "/nix/var/nix/profiles/vex/bin/vex-world-scanner"

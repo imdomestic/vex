@@ -34,8 +34,8 @@ P1 备份的 `session quit` 返回 `appExitRequestDisabled`，该包未包含独
 | 退出与删除 | GUI 的退出菜单清除临时本机会话并显示“未登录”，随后删除 friend-validation；正式连接保留 |
 | 正式 FQDN 的 GUI 请求 | CFNetwork 返回 ATS `-1022`，设置页及服务器页显示无法连接；尚未通过 |
 
-证据为 `.work/vex-p1-gui-home.txt`、`vex-p1-gui-settings.txt`、`vex-p1-gui-renamed.json`、`vex-p1-gui-servers.json`、`vex-p1-gui-servers-tree.txt`、`vex-p1-gui-expired.txt`、`vex-p1-gui-revoke-primary.json` 和 `vex-p1-gui-ats.log`。当前 GUI 使用的 P1 备份未包含随后新增的 SSE 状态显示；完整正式 FQDN 与最新 GUI 的验收将使用新的 P1 构建。专用 HTTP 传输依赖范围见同目录 `2026-10-18-ruri-vex-http.md`。
+证据为 `.work/vex-p1-gui-home.txt`、`vex-p1-gui-settings.txt`、`vex-p1-gui-renamed.json`、`vex-p1-gui-servers.json`、`vex-p1-gui-servers-tree.txt`、`vex-p1-gui-expired.txt`、`vex-p1-gui-revoke-primary.json` 和 `vex-p1-gui-ats.log`。当前 GUI 使用的 P1 备份未包含随后新增的 SSE 状态显示；正式域名与最新 GUI 的验收将使用 HTTPS 和方案 C 的模块构建。
 
-8792 的临时会话列表最终为空，`vex-login-it.service` 已停止，本次 SSH 转发已结束。隔离目录中只保留 encore-production，最终 CLI whoami 成功。证据为 `.work/vex-p1-gui-logout-tree.txt`、`vex-p1-gui-final-servers.json` 和 `vex-p1-gui-final-whoami.json`。正式 FQDN GUI 请求和最新 GUI 的断开状态仍待完成；当前暂停新增 HTTP 依赖，按用户要求评估按需组件边界。
+8792 的临时会话列表最终为空，`vex-login-it.service` 已停止，本次 SSH 转发已结束。隔离目录中只保留 encore-production，最终 CLI whoami 成功。证据为 `.work/vex-p1-gui-logout-tree.txt`、`vex-p1-gui-final-servers.json` 和 `vex-p1-gui-final-whoami.json`。正式 HTTPS 域名 GUI 请求和最新 GUI 的断开状态将在模块改造后验证；服务端 P1 合并与 P2 已获得独立推进授权。
 
 证据路径均相对于 `/Users/linwhite/ruri-vex-experimental`。反编译检查输出仅保存在 ignored `.work/vex-p1-*-javap.txt`。报告不包含凭据。

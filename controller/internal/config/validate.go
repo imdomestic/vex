@@ -49,13 +49,8 @@ func (c Config) Validate() error {
 	if !filepath.IsAbs(c.Server.DataDir) {
 		return fieldError("server.data_dir", "requires an absolute path")
 	}
-	if len(c.Server.Listen) == 0 {
-		return fieldError("server.listen", "requires at least one address")
-	}
-	for _, address := range c.Server.Listen {
-		if !validAddress(address) {
-			return fieldError("server.listen", "requires host:port addresses")
-		}
+	if err := c.Server.validateListeners(); err != nil {
+		return err
 	}
 	if !validURL(c.Server.PublicBaseURL) || !validURL(c.Server.InternalBaseURL) {
 		return fieldError("server", "requires HTTP base URLs without credentials, query or fragment")
