@@ -413,7 +413,7 @@ func (c *Client) Capacity(ctx context.Context) ([]model.Node, error) {
 		if !exists {
 			continue
 		}
-		n := model.Node{Name: node.Name, Roles: append([]string{}, configured.Roles...), Priority: configured.Priority, Schedulable: !node.Spec.Unschedulable, MaxRunning: configured.MaxRooms, Rooms: []string{}}
+		n := model.Node{Name: node.Name, Roles: append([]string{}, configured.Roles...), Priority: configured.Priority, Schedulable: roomNodeSchedulable(node, roomTolerations()), MaxRunning: configured.MaxRooms, Rooms: []string{}}
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady {
 				n.Ready = condition.Status == corev1.ConditionTrue

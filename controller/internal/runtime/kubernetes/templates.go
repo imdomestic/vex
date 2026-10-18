@@ -167,6 +167,7 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: podLabels}, Spec: corev1.PodSpec{
 				AutomountServiceAccountToken: &automount, TerminationGracePeriodSeconds: &grace,
 				NodeSelector: map[string]string{"kubernetes.io/hostname": spec.Node},
+				Tolerations:  roomTolerations(),
 				Volumes:      []corev1.Volume{{Name: "server-mods", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("1Gi")}}}},
 				InitContainers: []corev1.Container{{Name: "seed-world", Image: c.cfg.Minecraft.Image,
 					Command:      []string{"/bin/bash", "-euo", "pipefail", "-c", seedScript},
