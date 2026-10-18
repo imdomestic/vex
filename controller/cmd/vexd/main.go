@@ -201,20 +201,12 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 	}
 	service := api.New(cfg, projects, authenticator, bus)
 	service.RouterSource = routerSource
+	internalChecks := append([]func(context.Context, string) (bool, error){}, roomSources...)
+	if routerSource != nil {
+		internalChecks = append(internalChecks, routerSource)
+	}
 	internalSource := func(ctx context.Context, source string) (bool, error) {
-		if routerSource != nil {
-			allowed, err := routerSource(ctx, source)
-			if err != nil || allowed {
-				return allowed, err
-			}
-		}
-		for _, allowedSource := range roomSources {
-			allowed, err := allowedSource(ctx, source)
-			if err != nil || allowed {
-				return allowed, err
-			}
-		}
-		return false, nil
+		return allowedInternalSource(ctx, source, internalChecks)
 	}
 	var tlsConfig *tls.Config
 	var reload <-chan os.Signal

@@ -21,7 +21,7 @@
 
 服务启动时校验证书和私钥。每次完整 TLS 握手重新读取文件并检查匹配及有效期，文件变化不需要重启进程；无效的替换文件导致该次握手失败。SIGHUP 立即执行同样的校验并记录结果，NixOS 服务通过 `systemctl reload vexd` 提供入口。已有连接继续由原连接管理，API 和 SSE 不因证书重新读取而关闭。
 
-`internal` 入口在路由鉴权前检查真实连接来源：本机访问、实际 mc-router Pod，以及所属项目 namespace 内由平台 StatefulSet 管理的房间 Pod。房间初始化容器使用的 Pending Pod 也可访问；无关 Pod 或其他机器返回 403。来源检查错误返回 500。请求的 Bearer、签名 URL 与项目权限仍须单独验证，转发头不改变来源判定。宿主防火墙和项目 NetworkPolicy 同时限制内部 HTTP 的网络访问。
+`internal` 入口在路由鉴权前检查真实连接来源：本机访问、实际 mc-router Pod，以及所属项目 namespace 内的平台房间 Pod 和归档 Job Pod。房间和归档来源均核对实际所有者 UID、项目、房间、build、generation 与 ServiceAccount；归档 Job 还须匹配平台生成的名称。容器先于 kubelet 发布 Pod IP 发出请求时，等待真实 Kubernetes 状态更新后核验；所有项目并行检查，共用最多 10 秒的期限。无关 Pod 或其他机器返回 403，来源查询错误返回 500。请求的 Bearer、签名 URL 与项目权限仍须单独验证，转发头不改变来源判定。宿主防火墙和项目 NetworkPolicy 同时限制内部 HTTP 的网络访问。
 
 `server.public_base_url` 决定公开元数据、邀请及对外文件链接的地址。切换 HTTPS 后，客户端使用新地址与重新签发的链接。服务器不通过明文入口重定向用户凭据。内部房间下载使用 `server.internal_base_url`，其地址和路由权限保持独立。
 
