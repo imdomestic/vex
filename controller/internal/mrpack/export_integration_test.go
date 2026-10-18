@@ -92,6 +92,16 @@ func TestActualBuildExportsDeterministicRoomAndBuildPacks(t *testing.T) {
 		if err = json.Unmarshal(entries["modrinth.index.json"], &index); err != nil || index.FormatVersion != 1 || index.Game != "minecraft" || index.Dependencies["minecraft"] != *build.Minecraft || index.Dependencies["fabric-loader"] != *build.LoaderVersion {
 			t.Fatal("actual build dependencies differ from mrpack index", err)
 		}
+		if index.Name == "" || filepath.Base(index.Name) != index.Name || strings.ContainsAny(index.Name, `/\<>:"|?*`) {
+			t.Fatal("pack display name cannot be used as a launcher instance name")
+		}
+		expectedVersion := fmt.Sprintf("%s-a%d", build.ID, build.Attempt)
+		if target.room != nil {
+			expectedVersion = fmt.Sprintf("%s-g%d-%s-a%d", room.ID, room.Generation, build.ID, build.Attempt)
+		}
+		if index.VersionID != expectedVersion {
+			t.Fatal("pack version does not identify the fixed build and room generation")
+		}
 		for _, file := range build.Files {
 			if file.Side == "server" {
 				for path := range entries {
@@ -121,10 +131,11 @@ func TestActualBuildExportsDeterministicRoomAndBuildPacks(t *testing.T) {
 		if present {
 			var list struct {
 				Servers []struct {
-					IP string `nbt:"ip"`
+					Name string `nbt:"name"`
+					IP   string `nbt:"ip"`
 				} `nbt:"servers"`
 			}
-			if _, err = nbt.NewDecoder(bytes.NewReader(servers)).Decode(&list); err != nil || len(list.Servers) != 1 || list.Servers[0].IP != room.Host+":25565" {
+			if _, err = nbt.NewDecoder(bytes.NewReader(servers)).Decode(&list); err != nil || len(list.Servers) != 1 || list.Servers[0].Name != index.Name || list.Servers[0].IP != room.Host+":25565" {
 				t.Fatal("uncompressed servers.dat does not target the stopped PR", err)
 			}
 		}

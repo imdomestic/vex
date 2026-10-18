@@ -73,13 +73,13 @@ func Export(ctx context.Context, output io.Writer, build model.Build, room *mode
 	default:
 		return model.Failure("invalid_request", "mrpack loader is unsupported")
 	}
-	index := Index{FormatVersion: 1, Game: "minecraft", VersionID: fmt.Sprintf("%s-a%d", build.ID, build.Attempt), Name: build.Project + " / " + build.ID, Files: []File{}, Dependencies: map[string]string{"minecraft": *build.Minecraft, loader: *build.LoaderVersion}}
+	index := Index{FormatVersion: 1, Game: "minecraft", VersionID: fmt.Sprintf("%s-a%d", build.ID, build.Attempt), Name: build.Project + " - " + build.ID, Files: []File{}, Dependencies: map[string]string{"minecraft": *build.Minecraft, loader: *build.LoaderVersion}}
 	if room != nil {
 		if room.Project != build.Project || room.BuildID != build.ID || room.Generation < 0 || room.Generation == 0 && room.State != "stopped" || !versionPattern.MatchString(room.ID) || !validRoomHost(room.Host) || room.Port < 1 || room.Port > 65535 {
 			return model.Failure("conflict", "room does not reference this build")
 		}
 		index.VersionID = fmt.Sprintf("%s-g%d-%s-a%d", room.ID, room.Generation, build.ID, build.Attempt)
-		index.Name = build.Project + " / " + room.ID
+		index.Name = build.Project + " - " + room.ID
 	}
 	files := append([]model.BuildFile(nil), build.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
