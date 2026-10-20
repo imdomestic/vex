@@ -39,3 +39,5 @@ TMPDIR="$PWD/.work/tmp" go build -o .work/vex-bundle .
 ```
 
 `testdata/vex-build.json` 与 Vex controller 中的格式向量保持逐字节相同。独立 Action 可生成完整 bundle，再由 controller 的真实 Git/SQLite 导入测试验证两种实现处理相同字节。
+
+本项目采用 [MIT 许可证](LICENSE)。
