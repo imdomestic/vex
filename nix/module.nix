@@ -168,6 +168,7 @@ in
       serviceConfig = common // {
         User = "vexd";
         Group = "vexd";
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
         SupplementaryGroups = [ "vex-build" "vex-admin" ];
         ReadWritePaths = [ dataDir "/var/lib/vex" adminDirectory ];
         Type = "simple";
