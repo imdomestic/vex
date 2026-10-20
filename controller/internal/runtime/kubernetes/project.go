@@ -195,7 +195,6 @@ func (c *Client) projectObjects(ctx context.Context) (*corev1.ResourceQuota, *co
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": c.cfg.Runtime.Kubernetes.SystemNamespace}},
 				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "mc-router", "app.kubernetes.io/part-of": "vex"}},
 			}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &gamePort}}},
-			{From: apiPeers, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &gamePort}}},
 		},
 		Egress: []networkingv1.NetworkPolicyEgressRule{
 			{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dnsPort}, {Protocol: &tcp, Port: &dnsPort}}},

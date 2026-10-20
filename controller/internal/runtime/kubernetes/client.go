@@ -362,8 +362,12 @@ func (c *Client) rcon(ctx context.Context, id, command string) (string, error) {
 	if !c.managed(pod.Labels, id) {
 		return "", fmt.Errorf("Pod is not owned by this room")
 	}
-	req := c.api.CoreV1().RESTClient().Post().Resource("pods").Name(pod.Name).Namespace(c.ns).SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-		Container: "mc", Command: []string{"rcon-cli", command}, Stdout: true, Stderr: true,
+	return c.executePod(ctx, pod.Name, []string{"rcon-cli", command})
+}
+
+func (c *Client) executePod(ctx context.Context, pod string, command []string) (string, error) {
+	req := c.api.CoreV1().RESTClient().Post().Resource("pods").Name(pod).Namespace(c.ns).SubResource("exec").VersionedParams(&corev1.PodExecOptions{
+		Container: "mc", Command: command, Stdout: true, Stderr: true,
 	}, scheme.ParameterCodec)
 	executor, err := remotecommand.NewSPDYExecutor(c.rest, "POST", req.URL())
 	if err != nil {
@@ -372,7 +376,7 @@ func (c *Client) rcon(ctx context.Context, id, command string) (string, error) {
 	var out, stderr bytes.Buffer
 	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &out, Stderr: &stderr})
 	if err != nil {
-		return out.String(), fmt.Errorf("RCON exec: %w: %s", err, stderr.String())
+		return out.String(), fmt.Errorf("Pod exec: %w: %s", err, stderr.String())
 	}
 	return out.String(), nil
 }

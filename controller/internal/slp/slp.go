@@ -27,17 +27,10 @@ type Status struct {
 }
 
 func Probe(ctx context.Context, address, host string, port int) (Status, error) {
-	return ProbeFrom(ctx, address, host, port, nil)
-}
-
-func ProbeFrom(ctx context.Context, address, host string, port int, source net.IP) (Status, error) {
 	var result Status
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{}
-	if source != nil {
-		dialer.LocalAddr = &net.TCPAddr{IP: source}
-	}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return result, err

@@ -2,11 +2,11 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
-	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/router"
@@ -193,11 +193,7 @@ func (c *Client) Restore(ctx context.Context, ref runtime.ResourceRef, host stri
 			if !c.managed(pod.Labels, ref.ID) || pod.DeletionTimestamp != nil || pod.Labels["vex.imdomestic.com/generation"] != ref.Attributes["generation"] || pod.Labels["vex.imdomestic.com/build"] != ref.Attributes["build"] {
 				return fmt.Errorf("route Pod identity changed before status verification")
 			}
-			source, err := c.probeSource(ctx, pod.Status.PodIP)
-			if err != nil {
-				return err
-			}
-			probe, err := slp.ProbeFrom(ctx, net.JoinHostPort(pod.Status.PodIP, "25565"), host, 25565, source)
+			probe, err := c.podStatus(ctx, pod.Name)
 			if err != nil {
 				return fmt.Errorf("room status verification before route restoration: %w", err)
 			}
@@ -222,39 +218,23 @@ func (c *Client) Restore(ctx context.Context, ref runtime.ResourceRef, host stri
 	})
 }
 
-func (c *Client) probeSource(ctx context.Context, podIP string) (net.IP, error) {
-	target, err := netip.ParseAddr(podIP)
-	if err != nil || !target.IsGlobalUnicast() {
-		return nil, fmt.Errorf("room Pod has no routable address")
-	}
-	endpoint, err := url.Parse(c.cfg.Server.InternalBaseURL)
-	if err != nil || endpoint.Hostname() == "" {
-		return nil, fmt.Errorf("invalid internal API endpoint")
-	}
-	candidates, err := net.DefaultResolver.LookupNetIP(ctx, "ip", endpoint.Hostname())
+func (c *Client) podStatus(ctx context.Context, pod string) (slp.Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := c.executePod(ctx, pod, []string{"mc-monitor", "status", "-host", "127.0.0.1", "-port", "25565", "-timeout", "3s", "-json"})
 	if err != nil {
-		return nil, err
+		return slp.Status{}, err
 	}
-	interfaces, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
+	var result struct {
+		ServerInfo *slp.Status `json:"server_info"`
 	}
-	for _, candidate := range candidates {
-		candidate = candidate.Unmap()
-		if !candidate.IsGlobalUnicast() || candidate.Is4() != target.Unmap().Is4() {
-			continue
-		}
-		for _, local := range interfaces {
-			prefix, err := netip.ParsePrefix(local.String())
-			if err != nil {
-				return nil, err
-			}
-			if prefix.Addr().Unmap() == candidate {
-				return net.IP(candidate.AsSlice()), nil
-			}
-		}
+	if err = json.Unmarshal([]byte(output), &result); err != nil {
+		return slp.Status{}, fmt.Errorf("invalid Pod status response: %w", err)
 	}
-	return nil, fmt.Errorf("internal API endpoint has no local address matching the Pod address family")
+	if result.ServerInfo == nil || result.ServerInfo.Players.Online < 0 {
+		return slp.Status{}, fmt.Errorf("Pod status response has no valid server information")
+	}
+	return *result.ServerInfo, nil
 }
 
 func (c *Client) Forget(ctx context.Context, room model.Room) error {

@@ -123,10 +123,19 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	global.Runtime.Kubernetes.SystemNamespace = "vex-system"
 	if purpose != "lost" {
 		maxRooms := 1
-		if purpose == "routea" || purpose == "routeb" {
+		if purpose == "routea" || purpose == "routeb" || purpose == "wake" {
 			maxRooms = 2
 		}
-		global.Runtime.Kubernetes.Nodes = map[string]config.Node{"encore": {K8sName: "encore", Roles: []string{"persistent", "ephemeral"}, MaxRooms: maxRooms, Priority: 10}}
+		nodeID := os.Getenv("VEX_IT_NODE")
+		if nodeID == "" {
+			nodeID = "encore"
+		}
+		node, exists := global.Runtime.Kubernetes.Nodes[nodeID]
+		if !exists || node.K8sName == "" {
+			t.Fatal("integration node must exist in the actual operator configuration")
+		}
+		node.Roles, node.MaxRooms = []string{"persistent", "ephemeral"}, maxRooms
+		global.Runtime.Kubernetes.Nodes = map[string]config.Node{nodeID: node}
 	}
 	global.Archive = config.Archive{Backend: "local", Local: config.LocalArchive{Directory: filepath.Join(root, "archive")}}
 	if tank {

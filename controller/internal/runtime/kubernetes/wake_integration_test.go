@@ -151,6 +151,18 @@ func TestRealSleepingRouteRestoresMinecraftAndPreservesWorld(t *testing.T) {
 	if err != nil || currentService.UID != service.UID || len(currentService.Spec.Selector) == 0 {
 		t.Fatal("ready route did not preserve Service identity and restore selector", err)
 	}
+	pod, err := h.cluster.CoreV1().Pods(h.ns).Get(h.ctx, service.Name+"-0", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedNode := false
+	for _, node := range h.cfg.Runtime.Kubernetes.Nodes {
+		selectedNode = selectedNode || pod.Spec.NodeName == node.K8sName
+	}
+	if room.Node == nil || *room.Node != pod.Spec.NodeName || !selectedNode {
+		t.Fatal("restored route did not use the selected actual Kubernetes node")
+	}
+	t.Logf("restored sleeping route on actual node %s with Pod %s", pod.Spec.NodeName, pod.Name)
 	if _, err = h.cluster.DiscoveryV1().EndpointSlices(h.ns).Get(h.ctx, slice.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatal("ready route retained its manual wake EndpointSlice", err)
 	}
