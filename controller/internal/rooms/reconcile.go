@@ -447,7 +447,8 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 			return m.finishStop(ctx, room, rt, nil)
 		}
 		if rt.Spec == nil && !rt.ArchiveComplete {
-			return fmt.Errorf("retained world has neither generation specification nor completed archive")
+			// 本 generation 仍在排队、尚未获得规格：没有进程运行过，保留世界与上一次归档相同，不生成新快照。
+			return m.finishStop(ctx, room, rt, nil)
 		}
 		now := time.Now().UTC()
 		rt.StoppedAt = &now
