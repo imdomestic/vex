@@ -39,15 +39,27 @@
 - 每次结束后正常停止房间：g3 快照 `pr1-fabric-g3`、g4 快照 `pr1-fabric-g4`（6,235,573 字节）均已经 tank 校验。旧提交房间 `c932eab71-fabric` 用于无游戏回归后正常关闭为 closed/g4，快照 `c932eab71-fabric-g4` 已经 tank 校验。
 - Prism、HMCL 的证据位于 `.work/vex-p2/prism-wake-g3/`、`.work/vex-p2/hmcl-pr-g4/` 与对应日志；HMCL 实例与当时正式包 g4 的客户端文件逐字节一致（`.work/vex-p2/hmcl-pr-g4-verify.json`），实例元数据中的 versionId 仍为 g2。
 
+## 120 秒续租排队验收与排队房间停止修复
+
+- 用户允许后临时 `kubectl cordon seraph`。`pr1-fabric` 的保留世界在 seraph，签名 Ruri CLI 加入时房间进入真实 `queued / waiting for capacity`（generation 5）；120.622 秒后出现第二份租约（同一 generation 与 Build），取消后两份租约都被删除。随后 uncordon，两个节点 Ready。详见 Ruri 报告。
+- 停止这个排队中的 generation 时，控制器在每次调和中报错 `retained world has neither generation specification nor completed archive`，房间停在 stopping（没有 Pod，PVC 保持）。原因是排队中的 generation 尚未获得规格。
+- 修复提交 `5b2863127bd1f87403f5d9704185995ec06b0d07`（`fix(rooms): finish stopping a queued generation without a new archive`）：此情况直接结束停止、保留世界、不生成新快照；新增真实 SQLite 路径的 `controller/internal/rooms/stop_test.go`。完整 Go 检查通过，扫描（`.work/vex-source-audit-20261021T023303Z`）未分类候选 0、实际凭据 0，正常推送 origin 与 encore。
+- encore 全新 checkout `/home/linwhite/vex-oct20-5b28631` 构建应用 `/nix/store/rkgnm86479gc1j9d0dykkqckmqmbjz99-vex-applications`，保护部署通过。部署后 `pr1-fabric` 转为 stopped/generation 5，PVC `5b46b68d…` 保持，休眠路由恢复（SLP 为休眠 MOTD）。
+- nix-config 快进到 `8e05858`（另外两个提交只涉及 home 配置），Vex 输入更新到 `5b28631`。encore 系统 `/nix/store/lgimb1nmbc5fh1f1fhd6dq5f7z1jkdgc-nixos-system-encore-26.05.20260911.21a67dc` 相对上一系统只有 `vexd.toml` 中 manifest 的源码路径变化；保护切换通过。全部 20 台主机求值通过，提交 `00c8eff` 正常推送 main。
+
+## 独立 8792 账号未关联验收
+
+- 只含 8792 规则的临时 overlay（来源限定 Mac 尾网地址）经保护流程生效；独立服务 `/srv/vex-it-auth-unlinked-20261021` 没有用户映射。Ruri GUI 的 GitHub 登录经用户批准后显示“这个 GitHub 账号尚未加入该服务器，请联系管理员。”。
+- 之后停止服务（8792 无监听），数据库会话、token、邀请与全部 records 均为 0；encore 以保护流程切回不含 8792 的系统。证据 `.work/vex-oct21/auth8792-*.log`。
+
 ## 最终状态
 
-- encore：运行与持久系统 `mkbanhr…`，应用 profile `y8bmd6m4…`（`27b9f7f`），根分区可用 67,735,080,960 字节。seraph：`s1i7jkdj…`。
-- 三个 StatefulSet 均为 0/0；三个原 PVC Bound，UID 为 `c583ce8c-07f8-4aa1-b054-8db34357eb6d`、`c4fa6bb7-af46-4c3e-8c7d-741e35b084c4`、`5b46b68d-01a2-4428-9ae1-5ccc70eae531`。
-- 本轮创建的验收会话全部注销；`ruri on aegis` 会话 `a56f31eb…`（2026-10-17 创建）不属于本轮客户端，保持原样。临时规则、测试 namespace、临时 API 令牌文件都已清理。
-- Vex `feat/vex-p2` 已推送 `27b9f7f`；本报告与 2026-10-20 交接文档作为文档提交另行保存。P2 仍有外部阻塞，功能分支不合入 `dev`。
+- encore：运行与持久系统 `lgimb1nm…`，应用 profile `rkgnm864…`（`5b28631`），根分区可用 67,602,305,024 字节。seraph：`s1i7jkdj…`。全新 SSH 最终核对 `.work/vex-oct21/final-health-2.log`。
+- 三个 StatefulSet 均为 0/0；三个原 PVC Bound，UID 为 `c583ce8c-07f8-4aa1-b054-8db34357eb6d`、`c4fa6bb7-af46-4c3e-8c7d-741e35b084c4`、`5b46b68d-01a2-4428-9ae1-5ccc70eae531`。`example/pr1-fabric` 为 stopped/g5。
+- 本轮创建的验收会话全部注销；`ruri on aegis` 会话 `a56f31eb…`（2026-10-17 创建）不属于本轮客户端，保持原样。临时规则、cordon、测试 namespace、临时服务与 API 令牌文件都已清理。
+- Vex `feat/vex-p2` 已推送；应用 profile 与 nix-config 输入使用同一提交 `5b28631`。P2 仍有外部阻塞，功能分支不合入 `dev`。
 
 ## 剩余事项
 
 - chorus 改为 CI 构建：`imdomestic/chorus` PR #1 仍为 OPEN（head `d1315b62…`），需要用户或 hank 合并；未合并期间保持 host 构建。
 - 无写权限账号的 fork 评论负例：需要真实无写权限账号持有人。
-- 120 秒自动续租的真实排队验收：需要用户允许临时 cordon seraph（被本机权限策略拒绝）或指定其他排队方式。详见 Ruri 报告。

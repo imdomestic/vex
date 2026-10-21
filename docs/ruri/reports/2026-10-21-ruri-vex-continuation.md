@@ -35,7 +35,7 @@
 - 功能关闭时的 URL 入口：lldb 启动签名 GUI（全新数据目录），`open -a` 送达 `ruri://vex?…`，界面显示“Vex 尚未启用。…”；Vex 客户端、事件流、Token 存储、传输、认证的 372 个断点位置命中为 0，`SecItem*` 与 socket 调用中没有 Vex 调用栈；正常退出。`.work/vex-oct21-disabled-url/`。
 - PR 链接确认后进入房间：见服务端报告第 6 次启动。
 - 未解决：四次 GitHub 登录观察中，两次主窗口在发起后约 3.5 分钟从 AX 中消失（第一次 204 秒，第四次 225 秒），一次表单在到期后约 3 秒关闭；两次窗口消失后正常退出卡在 `prepareToQuit`，以 SIGTERM 结束。源码中没有关闭窗口的路径，原因未确定，也可能是人工关闭窗口。证据 `.work/vex-oct21-t05-gui-timeout{,-2,-4}.jsonl`、`vex-oct21-gui-sample*.txt`。
-- 账号未关联的 GUI 提示：需要独立 8792 服务与再次 GitHub 批准，等待用户。
+- 账号未关联：对没有用户映射的独立 8792 服务发起 GUI GitHub 登录，用户批准后表单显示“这个 GitHub 账号尚未加入该服务器，请联系管理员。”并持续显示；本地没有保存会话或 Keychain 条目。`.work/vex-oct21-t05-unlinked.jsonl`。
 
 ## MRPack 实际复用与文件安全：通过
 
@@ -46,7 +46,9 @@
 - 旧提交回归：`c932eab71-fabric` prepare 为 generation 4、Build `fabric-932eab713246`，`launch --dry-run` 一致，随后正常关闭。
 - 证据 `.work/vex-oct21-t07/`、`.work/vex-oct21-t07-old/`。
 
-## 120 秒自动续租：等待用户决定
+## 120 秒自动续租：通过
 
-- 续租只在加入仍等待时触发；现有房间重新启动远少于 120 秒，全部快照在本地，chorus host 构建约 29 秒，example 的 CI 构建在 CI 成功后才登记，没有自然的长时间等待。
-- 真实排队条件为构建、种子恢复与容量；`pr1-fabric` 的世界保留在 seraph。拟定临时 `kubectl cordon seraph` 使其进入 `waiting for capacity`，用签名 CLI `vex prepare` 观察 120 秒后的第二份租约，再取消并核对租约删除，最后 uncordon；脚本 `.work/vex-oct21-t06-renewal.py`。该节点操作被本机权限策略拒绝，未执行。
+- 续租只在加入仍等待时触发；现有房间重新启动远少于 120 秒，没有自然的长时间等待。真实排队条件为构建、种子恢复与容量；`pr1-fabric` 的世界保留在 seraph。
+- 用户允许后临时 `kubectl cordon seraph`（seraph 上没有 Pod）。签名 CLI `vex prepare pr1-fabric` 使房间进入 `queued / waiting for capacity`（generation 5）。第一份租约 `b0467e10…`，120.622 秒后第二份租约 `980b8d1b…`，同一 generation 与 Build，服务端记录了两份租约。随后 SIGINT 取消，CLI 在 125.991 秒退出，本次加入的租约全部删除。之后 uncordon，CLI 会话注销。没有缩短时间、手动调用 `issue()` 或修改状态。
+- 证据 `.work/vex-oct21-t06/`（`observations.jsonl`、`cli.ndjson`、`summary.json`）与 `.work/vex-oct21-t06-run.jsonl`。
+- 停止这个排队中的房间时发现服务端缺陷（停在 stopping），已在 Vex `5b28631` 修复并部署，见服务端报告。
