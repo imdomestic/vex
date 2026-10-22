@@ -78,6 +78,10 @@ func (m *Manager) ImportCI(ctx context.Context, input CIImport) ([]model.Build, 
 	if err != nil {
 		return nil, false, err
 	}
+	commit, err := m.mirror.CommitInfo(ctx, input.SHA)
+	if err != nil {
+		return nil, false, err
+	}
 	stage, err := os.MkdirTemp(filepath.Join(m.cfg.DataDir, ".work"), "ci-import-")
 	if err != nil {
 		return nil, false, err
@@ -170,7 +174,7 @@ func (m *Manager) ImportCI(ctx context.Context, input CIImport) ([]model.Build, 
 				Project: m.cfg.ID, ID: id, SHA: input.SHA, Loader: selected.Loader, Status: "ready", Attempt: attempt,
 				Source:   model.BuildSource{Kind: "ci", Repository: input.Repository, Workflow: input.Workflow, RunID: input.RunID, RunAttempt: input.RunAttempt, PRNumber: input.PRNumber, Event: input.Event, HTMLURL: input.HTMLURL},
 				QueuedAt: now, StartedAt: &now, FinishedAt: &now, BuiltAt: &now, DurationSec: &duration,
-				Log: m.apiPrefix() + "/builds/" + id + "/log",
+				Log: m.apiPrefix() + "/builds/" + id + "/log", Commit: &commit,
 			}
 			if err = m.publishFiles(&value, doc, selected, extracted); err != nil {
 				return err
@@ -231,6 +235,7 @@ func (m *Manager) identicalPublication(current model.Build, doc manifest.Documen
 func (m *Manager) publishFiles(value *model.Build, doc manifest.Document, selected BundleBuild, extracted string) error {
 	minecraft, java, loaderVersion := doc.Minecraft.Version, doc.Minecraft.Java, doc.Loaders[value.Loader].LoaderVersion
 	value.Minecraft, value.Java, value.LoaderVersion = &minecraft, &java, &loaderVersion
+	value.Manifest = &doc
 	value.WorldExtraRootEntries = append([]string{}, doc.World.ExtraRootEntries...)
 	value.RoomMemory = doc.Rooms.Memory
 	value.Files = []model.BuildFile{}

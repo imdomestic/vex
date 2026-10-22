@@ -100,8 +100,8 @@ func integrationRoomSpec(t *testing.T, c *Client) RoomSpec {
 		t.Fatal(err)
 	}
 	return RoomSpec{
-		Room:  model.Room{Project: c.cfg.ID, ID: "main-fabric", Kind: "branch", Loader: "fabric", BuildID: "fabric-fc16eaac252b", Generation: 1},
-		Build: model.Build{Project: c.cfg.ID, ID: "fabric-fc16eaac252b", Loader: "fabric", Status: "ready", Minecraft: &version, LoaderVersion: &loader, Java: &java},
+		Room:  model.Room{Project: c.cfg.ID, ID: "main-fabric", Kind: "branch", Loader: "fabric", BuildID: "fabric-0123456789ab", Generation: 1},
+		Build: model.Build{Project: c.cfg.ID, ID: "fabric-0123456789ab", Loader: "fabric", Status: "ready", Minecraft: &version, LoaderVersion: &loader, Java: &java},
 		Node:  "encore", RoomToken: hex.EncodeToString(credential), RCONPassword: hex.EncodeToString(credential[:16]),
 		Whitelist: c.cfg.Minecraft.Whitelist, EnforceWhitelist: true,
 	}
@@ -236,7 +236,7 @@ func TestActualFailureContainerLogs(t *testing.T) {
 		if initFailure {
 			id = "crashing-init"
 		}
-		labels := map[string]string{"vex.imdomestic.com/managed": "true", "vex.imdomestic.com/project": c.cfg.ID, "vex.imdomestic.com/room": id, "vex.imdomestic.com/generation": "1", "vex.imdomestic.com/build": "fabric-fc16eaac252b"}
+		labels := map[string]string{"vex.imdomestic.com/managed": "true", "vex.imdomestic.com/project": c.cfg.ID, "vex.imdomestic.com/room": id, "vex.imdomestic.com/generation": "1", "vex.imdomestic.com/build": "fabric-0123456789ab"}
 		container := corev1.Container{Name: "mc", Image: c.cfg.Minecraft.Image, Command: []string{"/bin/sh", "-c", "echo vex-container-failure-evidence; exit 7"}, Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("16Mi"), corev1.ResourceCPU: resource.MustParse("10m")}, Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi"), corev1.ResourceCPU: resource.MustParse("100m")}}}
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "room-" + id + "-0", Labels: labels}, Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyAlways, Containers: []corev1.Container{container}}}
 		if initFailure {
@@ -266,7 +266,7 @@ func TestActualFailureContainerLogs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref, err := c.Reference(model.Room{Project: c.cfg.ID, ID: id, Kind: "commit", Generation: 1, BuildID: "fabric-fc16eaac252b"})
+		ref, err := c.Reference(model.Room{Project: c.cfg.ID, ID: id, Kind: "commit", Generation: 1, BuildID: "fabric-0123456789ab"})
 		if err != nil {
 			t.Fatal(err)
 		}

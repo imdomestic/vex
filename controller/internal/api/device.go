@@ -52,3 +52,20 @@ func (s *Server) devicePoll(w http.ResponseWriter, r *http.Request, id auth.Iden
 		Interval int64  `json:"interval"`
 	}{"pending", interval})
 }
+
+func (s *Server) deviceCancel(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
+	if s.Device == nil {
+		return model.Failure("provider_unavailable", "GitHub 登录尚未启用")
+	}
+	var request struct {
+		Handle string `json:"handle"`
+	}
+	if err := decode(r, &request, false); err != nil {
+		return err
+	}
+	if err := s.Device.Cancel(r.Context(), request.Handle); err != nil {
+		return err
+	}
+	w.WriteHeader(204)
+	return nil
+}

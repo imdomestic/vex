@@ -24,7 +24,12 @@ import (
 
 func loginEnvironment(t *testing.T) (*Server, *httptest.Server, *store.Store) {
 	t.Helper()
-	directory := t.TempDir()
+	return loginEnvironmentIn(t, t.TempDir())
+}
+
+// loginEnvironmentIn 把数据库保存在 directory/state.db，供测试以同一文件模拟重启。
+func loginEnvironmentIn(t *testing.T, directory string) (*Server, *httptest.Server, *store.Store) {
+	t.Helper()
 	cfg := config.Defaults()
 	cfg.Server.Name = "Login integration"
 	cfg.Users = map[string]config.User{"admin": {Admin: true}, "member": {}, "other": {}}

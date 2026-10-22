@@ -60,7 +60,7 @@ func realBundle(t *testing.T) (*Manager, string, Bundle, string, string) {
 	m.cfg.Loaders["neoforge"] = config.Loader{Enabled: true}
 	doc := manifest.Document{
 		Schema: 1, Minecraft: manifest.Minecraft{Version: "26.3", Java: 25},
-		World: manifest.World{ExtraRootEntries: []string{"chorus-checkpoint.json"}}, Rooms: manifest.Rooms{Memory: "4G"},
+		World: manifest.World{ExtraRootEntries: []string{"project-state.json"}}, Rooms: manifest.Rooms{Memory: "4G"},
 		Loaders: map[string]manifest.Loader{
 			"fabric":   {LoaderVersion: "0.19.5", Files: []manifest.File{{Glob: "fabric/**/*.jar", Exclude: []string{"*-sources.jar"}, Side: "both"}}},
 			"neoforge": {LoaderVersion: "26.3.0.45-beta", Files: []manifest.File{{Glob: "neoforge/**/*.jar", Side: "both"}}},

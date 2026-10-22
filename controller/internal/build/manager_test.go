@@ -155,7 +155,7 @@ func TestRequestSerializesAttemptsAndResetsMetadata(t *testing.T) {
 	_, _, err = m.Request(ctx, "--all", "fabric", false)
 	requireCode(t, err, "invalid_request")
 	_, _, err = m.Request(ctx, strings.Repeat("0", 40), "fabric", false)
-	requireCode(t, err, "not_found")
+	requireCode(t, err, "commit_unavailable")
 	_, _, err = m.Request(ctx, commits[0], "neoforge", false)
 	requireCode(t, err, "invalid_request")
 }

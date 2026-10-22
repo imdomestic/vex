@@ -18,6 +18,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/testfixture"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
@@ -86,32 +87,26 @@ func realWorldArchive(t *testing.T, source, destination string, compression int)
 	}
 }
 
-func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
-	world, scanner, commit := os.Getenv("VEX_IT_WORLD"), os.Getenv("VEX_IT_SCANNER"), os.Getenv("VEX_IT_SOURCE_SHA")
-	if world == "" || scanner == "" || commit == "" {
-		t.Skip("requires real world, scanner and source SHA environment variables")
+func TestRealWorldPublicationAndPersistentArchiveQueue(t *testing.T) {
+	scanner := os.Getenv("VEX_IT_SCANNER")
+	if scanner == "" {
+		t.Skip("requires the Vex world scanner")
 	}
 	ctx := context.Background()
-	document, manifestSHA := testfixture.Manifest(t)
-	policy := ManifestPolicy{SHA: manifestSHA, Document: document}
+	fixture := testproject.NewFixture(t, "world-test")
+	policy := ManifestPolicy{SHA: fixture.Build.SHA, Document: *fixture.Build.Manifest, Commit: fixture.Build.Commit}
 	root := t.TempDir()
-	db, err := store.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	db, err = db.WithProject("world-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.ProjectConfig{ID: "world-test", DataDir: filepath.Join(root, "data"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: "26.3"}}, Loaders: map[string]config.Loader{"fabric": {Enabled: true}}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}}
+	db := fixture.DB
+	cfg := fixture.Config
+	cfg.Worlds = config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}
 	m, err := New(cfg, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(root, "plaza.tar.gz")
+	world := testfixture.WorldDirectory(t, "world-26.3.tar.gz", filepath.Join(root, "source"))
+	archive := filepath.Join(root, "fixture.tar.gz")
 	realWorldArchive(t, world, archive, gzip.BestSpeed)
-	metadata := model.WorldMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: commit, Scale: 1}}
+	metadata := model.WorldMetadata{ID: "fixture", Title: "Vex 固定测试世界", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Scale: 1}}
 	first, created, err := m.Publish(ctx, metadata, archive, policy)
 	if err != nil || !created || first.Rev != "1" {
 		t.Fatalf("first publish: %+v %t %v", first, created, err)
@@ -130,12 +125,12 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 			t.Fatalf("invalid transfer task: %+v", task)
 		}
 	}
-	_, _, err = m.SetState(ctx, "plaza", "archived")
+	_, _, err = m.SetState(ctx, "fixture", "archived")
 	var failure *model.Error
 	if !errors.As(err, &failure) || failure.Code != "archive_failed" {
 		t.Fatalf("unverified archive accepted: %v", err)
 	}
-	published, accepted, err := m.RequestRestore(ctx, "plaza")
+	published, accepted, err := m.RequestRestore(ctx, "fixture")
 	if err != nil || accepted || published.State != "active" {
 		t.Fatalf("local active restore: %+v %t %v", published, accepted, err)
 	}
@@ -145,13 +140,13 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 		t.Fatalf("inaccurate namespaces accepted: %v", err)
 	}
 	metadata.Requires.Namespaces = []string{}
-	secondArchive := filepath.Join(root, "plaza-compressed.tar.gz")
+	secondArchive := filepath.Join(root, "fixture-compressed.tar.gz")
 	realWorldArchive(t, world, secondArchive, gzip.BestCompression)
 	second, created, err := m.Publish(ctx, metadata, secondArchive, policy)
 	if err != nil || !created || second.Rev != "2" || second.World.SHA256 == first.World.SHA256 {
 		t.Fatalf("new archive revision: %+v %t %v", second, created, err)
 	}
-	file, err := m.OpenWorld(ctx, "plaza", "1")
+	file, err := m.OpenWorld(ctx, "fixture", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +158,5 @@ func TestRealPlazaPublicationAndPersistentArchiveQueue(t *testing.T) {
 	if _, err = os.Stat(filepath.Join(world, "level.dat")); err != nil {
 		t.Fatal("source world changed", err)
 	}
-	t.Logf("real plaza: revisions 1/2, idempotence, namespace scan, immutable downloads, persistent archive queue and local restore verified")
+	t.Logf("fixed test world: revisions 1/2, idempotence, namespace scan, immutable downloads, persistent archive queue and local restore verified")
 }

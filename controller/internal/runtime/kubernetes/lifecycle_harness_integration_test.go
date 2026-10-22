@@ -3,6 +3,7 @@
 package kubernetes_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,7 +13,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/imdomestic/vex/controller/internal/api"
 	"github.com/imdomestic/vex/controller/internal/archive"
 	"github.com/imdomestic/vex/controller/internal/auth"
@@ -32,6 +33,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/runtime"
 	backend "github.com/imdomestic/vex/controller/internal/runtime/kubernetes"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,26 +51,24 @@ type lifecycleHarness struct {
 	cluster  *kubernetes.Clientset
 	db       *store.Store
 	manifest model.Build
+	project  *testproject.Project
 	ns       string
 	root     string
 	baseURL  string
 	token    string
 	sources  *sync.Map
+	// adminToken 属于平台管理员，只在测试项目中具有 viewer 角色。
+	adminToken string
 }
 
+// newLifecycleHarness 建立独立的测试项目：自建 Git 远端、固定测试文件导入的 CI Build、独立 namespace 与数据目录。
+// 运维配置只提供运行后端、节点与镜像设置；测试不读取任何实际项目的仓库、Build 或数据。
 func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarness {
 	t.Helper()
-	configFile, manifestFile := os.Getenv("VEX_IT_CONFIG"), os.Getenv("VEX_IT_BUILD")
-	work, mirrorPath := os.Getenv("VEX_IT_WORK"), os.Getenv("VEX_IT_MIRROR")
-	if purpose == "routeb" {
-		manifestFile, mirrorPath = os.Getenv("VEX_IT_BUILD_B"), os.Getenv("VEX_IT_MIRROR_B")
-		if manifestFile == "" || mirrorPath == "" {
-			t.Fatal("second routed project requires its independently built ready manifest and actual mirror")
-		}
-	}
+	configFile, work := os.Getenv("VEX_IT_CONFIG"), os.Getenv("VEX_IT_WORK")
 	runID, kubeconfig := os.Getenv("VEX_IT_RUN_ID"), os.Getenv("VEX_IT_KUBECONFIG")
-	if configFile == "" || manifestFile == "" || work == "" || mirrorPath == "" || runID == "" || kubeconfig == "" {
-		t.Skip("requires actual Vex config/build/mirror, k3s and isolated workspace")
+	if configFile == "" || work == "" || runID == "" || kubeconfig == "" || os.Getenv("VEX_IT_FIXTURES") == "" {
+		t.Skip("requires the Vex operator config, fixed test files, k3s and an isolated workspace")
 	}
 	if !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
 		t.Fatal("integration storage must be an absolute ignored workspace")
@@ -82,26 +82,6 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 		t.Fatal(err)
 	}
 	global := resolved.Config
-	data, err := os.ReadFile(manifestFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest model.Build
-	if err = json.Unmarshal(data, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Status != "ready" || manifest.Minecraft == nil || manifest.Java == nil {
-		t.Fatal("integration requires an actual ready build manifest")
-	}
-	source, err := global.ForProject(manifest.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	loadActualBuildManifest(t, source, mirrorPath, &manifest)
-	project := global.Projects[manifest.Project]
-	project.Members = map[string]config.Role{"integration": config.Owner}
-	project.Quota.MaxRooms, project.Quota.SnapshotKeep, project.Quota.SnapshotKeepDays = 1, 0, 0
-	global.Projects = map[string]config.Project{projectID: project}
 	if err = os.MkdirAll(work, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +92,10 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	if err = worldarchive.Space(root); err != nil {
 		t.Fatal(err)
 	}
+	repository, sha := testproject.New(t, filepath.Join(root, "project"))
+	project := testproject.Configure(t, &global, repository.Remote, map[string]config.Role{"integration": config.Owner, "administrator": config.Viewer})
+	project.Quota.MaxRooms, project.Quota.SnapshotKeep, project.Quota.SnapshotKeepDays = 1, 0, 0
+	global.Projects = map[string]config.Project{projectID: project}
 	global.Server.DataDir = filepath.Join(root, "data")
 	global.Server.Zone = "integration.vex.internal"
 	global.Rooms.StartTimeout = "300s"
@@ -163,7 +147,16 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	}
 	token := hex.EncodeToString(secret)
 	tokenHash := sha256.Sum256([]byte(token))
-	global.Users = map[string]config.User{"integration": {TokenSHA256: hex.EncodeToString(tokenHash[:]), Minecraft: append([]string{}, source.Minecraft.Whitelist...)}}
+	if _, err = rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	adminToken := hex.EncodeToString(secret)
+	adminHash := sha256.Sum256([]byte(adminToken))
+	global.Users = map[string]config.User{
+		// 测试成员绑定一个随机 Minecraft UUID，供唤醒登录探测使用；不对应任何真实账号。
+		"integration":   {TokenSHA256: hex.EncodeToString(tokenHash[:]), Minecraft: []string{uuid.NewString()}},
+		"administrator": {TokenSHA256: hex.EncodeToString(adminHash[:]), Admin: true, Minecraft: []string{}},
+	}
 	global.Auth.SigningKeyFile = filepath.Join(root, "signing.key")
 	if _, err = rand.Read(secret); err != nil {
 		t.Fatal(err)
@@ -188,45 +181,12 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range manifest.Files {
-		artifact := &manifest.Files[i]
-		if !filepath.IsLocal(artifact.Path) || artifact.Path == "." {
-			t.Fatal("actual manifest artifact path is not local")
-		}
-		original := filepath.Join(source.DataDir, filepath.FromSlash(artifact.Path))
-		digest, size, err := worldarchive.Digest(original)
-		if err != nil || digest != artifact.SHA256 || size != artifact.Size {
-			t.Fatal("actual artifact differs from ready manifest", err)
-		}
-		destination := filepath.Join(cfg.DataDir, filepath.FromSlash(artifact.Path))
-		if err = os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-			t.Fatal(err)
-		}
-		input, err := os.Open(original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err != nil {
-			input.Close()
-			t.Fatal(err)
-		}
-		_, copyErr := io.Copy(output, input)
-		if err = errors.Join(copyErr, output.Close(), input.Close()); err != nil {
-			t.Fatal(err)
-		}
-		artifact.URL = "/v2/projects/" + projectID + "/builds/" + manifest.ID + "/files/" + url.PathEscape(artifact.Name)
-	}
-	manifest.Project = projectID
 	testTimeout := 18 * time.Minute
-	if purpose == "seed" || purpose == "seedssh" {
+	if purpose == "seed" || purpose == "seedssh" || purpose == "history" || purpose == "reset" {
 		testTimeout = 40 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	t.Cleanup(cancel)
-	if err = db.Put(ctx, "build", manifest.ID, manifest); err != nil {
-		t.Fatal(err)
-	}
 	rest, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		t.Fatal(err)
@@ -279,14 +239,18 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 	if setupErr != nil {
 		t.Fatal(setupErr)
 	}
-	mirror, err := gitmirror.New(cfg.Git.Remote, mirrorPath)
+	mirror, err := gitmirror.New(cfg.Git.Remote, filepath.Join(root, "mirror.git"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = mirror.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
 	builder, err := build.New(cfg, db, mirror)
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifest := testproject.ImportBuild(t, builder, sha)
 	bus := events.New(owner, projectID)
 	manager := rooms.New(cfg, db, mirror, builder, client, client, credentials, bus)
 	manager.Worlds, err = worlds.New(cfg, db)
@@ -324,7 +288,7 @@ func newLifecycleHarness(t *testing.T, purpose string, tank bool) *lifecycleHarn
 			t.Errorf("actual API server: %v", err)
 		}
 	}()
-	return &lifecycleHarness{t: t, ctx: ctx, cfg: cfg, manager: manager, backend: client, cluster: cluster, db: db, manifest: manifest, ns: ns, root: root, baseURL: baseURL, token: token, sources: sources}
+	return &lifecycleHarness{t: t, ctx: ctx, cfg: cfg, manager: manager, backend: client, cluster: cluster, db: db, manifest: manifest, project: repository, ns: ns, root: root, baseURL: baseURL, token: token, adminToken: adminToken, sources: sources}
 }
 
 func (h *lifecycleHarness) wait(label string, timeout time.Duration, check func() bool) {
@@ -339,6 +303,49 @@ func (h *lifecycleHarness) wait(label string, timeout time.Duration, check func(
 			h.t.Fatalf("timed out waiting for %s", label)
 		case <-time.After(time.Second):
 		}
+	}
+}
+
+// request 以 token 调用测试服务的真实 API，返回 HTTP 状态与响应正文。
+func (h *lifecycleHarness) request(token, method, route string, payload any) (int, []byte) {
+	h.t.Helper()
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(h.ctx, method, h.baseURL+route, body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatal("actual project API request failed", err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return response.StatusCode, data
+}
+
+// failure 断言 API 返回指定的 HTTP 状态与错误码。
+func (h *lifecycleHarness) failure(token, method, route string, payload any, status int, code string) {
+	h.t.Helper()
+	actual, data := h.request(token, method, route, payload)
+	var response struct {
+		Error model.Error `json:"error"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil || actual != status || response.Error.Code != code {
+		h.t.Fatalf("%s %s returned %d %s, expected %d %s", method, route, actual, response.Error.Code, status, code)
 	}
 }
 

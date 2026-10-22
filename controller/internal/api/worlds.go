@@ -11,7 +11,6 @@ import (
 	"github.com/imdomestic/vex/controller/internal/auth"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
-	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
@@ -111,19 +110,12 @@ func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Id
 func (s *Server) worldPromote(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
 	var body struct {
 		Snapshot string `json:"snapshot"`
+		Title    string `json:"title"`
 	}
 	if err := decode(r, &body, false); err != nil {
 		return err
 	}
-	var snapshot model.Snapshot
-	if err := s.DB.Get(r.Context(), "snapshot", body.Snapshot, &snapshot); err != nil {
-		return err
-	}
-	document, err := s.Builds.Manifest(r.Context(), snapshot.ManifestSHA)
-	if err != nil {
-		return err
-	}
-	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot, worlds.ManifestPolicy{SHA: snapshot.ManifestSHA, Document: document})
+	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot, body.Title)
 	if err != nil {
 		return err
 	}

@@ -24,7 +24,7 @@ glob = "fabric/build/libs/*.jar"
 exclude = ["*-sources.jar"]
 side = "both"
 [world]
-extra_root_entries = ["chorus-checkpoint.json"]
+extra_root_entries = ["project-state.json"]
 [rooms]
 memory = "4G"
 `
@@ -34,7 +34,7 @@ func TestStrictManifestAndOperatorPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := manifest.Policy{Minecraft: "26.3", Java: map[int]bool{25: true}, Loaders: map[string]bool{"fabric": true}, MaxMemory: "5Gi", ExtraRootEntries: []string{"chorus-checkpoint.json"}}
+	policy := manifest.Policy{Minecraft: "26.3", Java: map[int]bool{25: true}, Loaders: map[string]bool{"fabric": true}, MaxMemory: "5Gi", ExtraRootEntries: []string{"project-state.json"}}
 	if err = manifest.Validate(doc, policy); err != nil {
 		t.Fatal(err)
 	}

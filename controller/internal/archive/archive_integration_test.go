@@ -26,19 +26,13 @@ import (
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/testfixture"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func realArchiveWorld(t *testing.T, source, destination string) {
 	t.Helper()
-	resolved, err := filepath.EvalSymlinks(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved == "/home/linwhite/d2-assets/sensitive" || strings.HasPrefix(resolved, "/home/linwhite/d2-assets/sensitive/") {
-		t.Fatal("sensitive world is forbidden")
-	}
 	output, err := os.Create(destination)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +42,7 @@ func realArchiveWorld(t *testing.T, source, destination string) {
 		t.Fatal(err)
 	}
 	bundle := tar.NewWriter(gz)
-	err = filepath.WalkDir(resolved, func(filename string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(source, func(filename string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -63,7 +57,7 @@ func realArchiveWorld(t *testing.T, source, destination string) {
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(resolved, filename)
+		relative, err := filepath.Rel(source, filename)
 		if err != nil {
 			return err
 		}
@@ -208,14 +202,14 @@ func TestRealTankInterruptedTransferSnapshotAndWorldRecovery(t *testing.T) {
 
 func realArchiveLifecycle(t *testing.T, remote bool) {
 	t.Helper()
-	world, scanner, sourceSHA := os.Getenv("VEX_IT_WORLD"), os.Getenv("VEX_IT_SCANNER"), os.Getenv("VEX_IT_SOURCE_SHA")
+	scanner := os.Getenv("VEX_IT_SCANNER")
 	tank, identity, knownHosts := os.Getenv("VEX_IT_TANK"), os.Getenv("VEX_IT_IDENTITY"), os.Getenv("VEX_IT_KNOWN_HOSTS")
 	work, signals := os.Getenv("VEX_IT_WORK"), os.Getenv("VEX_IT_TAILSCALE_SIGNALS")
-	if world == "" || scanner == "" || sourceSHA == "" || work == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
-		t.Skip("requires a real world, scanner, source SHA, ignored workspace and selected archive backend")
+	if scanner == "" || work == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
+		t.Skip("requires the Vex world scanner, ignored workspace and selected archive backend")
 	}
-	if len(sourceSHA) != 40 || !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
-		t.Fatal("integration requires an actual source commit and absolute ignored workspace")
+	if !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
+		t.Fatal("integration requires an absolute ignored workspace")
 	}
 	var host, remoteRoot string
 	var err error
@@ -254,7 +248,8 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	if err = worldarchive.Space(root); err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(root, "plaza.tar.gz")
+	world := testfixture.WorldDirectory(t, "world-26.3-large.tar.gz", filepath.Join(root, "source"))
+	source := filepath.Join(root, "fixture.tar.gz")
 	realArchiveWorld(t, world, source)
 	digest, size, err := worldarchive.Digest(source)
 	if err != nil {
@@ -285,11 +280,11 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	snapshot := model.Snapshot{Project: cfg.ID, ID: "plaza-capture", RoomID: "plaza-it", RoomGeneration: 1, BuildID: "fabric-" + sourceSHA[:12], Minecraft: "26.3", CapturedAt: now, CreatedAt: now, SHA256: digest, Size: size, LocalAvailable: true}
-	document, manifestSHA := testfixture.Manifest(t)
-	policy := worlds.ManifestPolicy{SHA: manifestSHA, Document: document}
-	snapshot.BuildID = "fabric-" + manifestSHA[:12]
-	snapshot.ManifestSHA, snapshot.WorldExtraRootEntries = manifestSHA, append([]string{}, document.World.ExtraRootEntries...)
+	document, commit := testproject.Policy(t, filepath.Join(root, "project"))
+	policy := worlds.ManifestPolicy{SHA: commit.SHA, Document: document, Commit: &commit}
+	snapshot := model.Snapshot{Project: cfg.ID, ID: "fixture-capture", RoomID: "fixture-it", RoomGeneration: 1, BuildID: "fabric-" + commit.SHA[:12], Minecraft: "26.3", CapturedAt: now, CreatedAt: now, SHA256: digest, Size: size, LocalAvailable: true}
+	snapshot.ManifestSHA, snapshot.WorldExtraRootEntries = commit.SHA, append([]string{}, document.World.ExtraRootEntries...)
+	snapshot.Commit, snapshot.Manifest = &commit, &document
 	relative := path.Join("snapshots", snapshot.RoomID, snapshot.ID+".tar.gz")
 	snapshot.Path = relative
 	local := filepath.Join(cfg.DataDir, filepath.FromSlash(relative))
@@ -488,12 +483,12 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 		t.Fatal(err)
 	}
 	m.Worlds = worldManager
-	metadata := model.WorldMetadata{ID: "plaza", Title: "高塔 · 中庭广场样板", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Repo: "encore:/home/linwhite/d2-map-dev", Commit: sourceSHA, Scale: 1}}
+	metadata := model.WorldMetadata{ID: "fixture", Title: "Vex 固定测试世界", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Namespaces: []string{}}, Source: model.Source{Scale: 1}}
 	revision, created, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || !created || revision.Rev != "1" {
 		t.Fatalf("real world publish: %+v %t %v", revision, created, err)
 	}
-	_, _, err = worldManager.SetState(ctx, "plaza", "archived")
+	_, _, err = worldManager.SetState(ctx, "fixture", "archived")
 	var failure *model.Error
 	if !errors.As(err, &failure) || failure.Code != "archive_failed" {
 		t.Fatalf("unverified world archive accepted: %v", err)
@@ -501,18 +496,18 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	if err = worldManager.EvictArchived(ctx); err != nil {
 		t.Fatal(err)
 	}
-	worldLocal := filepath.Join(cfg.DataDir, worlds.WorldPath("plaza", "1"))
+	worldLocal := filepath.Join(cfg.DataDir, worlds.WorldPath("fixture", "1"))
 	if _, err = os.Stat(worldLocal); err != nil {
 		t.Fatal("unverified world was evicted", err)
 	}
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	archived, _, err := worldManager.SetState(ctx, "plaza", "archived")
+	archived, _, err := worldManager.SetState(ctx, "fixture", "archived")
 	if err != nil || archived.State != "archived" {
 		t.Fatalf("verified world archive: %+v %v", archived, err)
 	}
-	opened, err := worldManager.OpenWorld(ctx, "plaza", "1")
+	opened, err := worldManager.OpenWorld(ctx, "fixture", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,11 +523,11 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	if err != nil || count != size || hex.EncodeToString(hash.Sum(nil)) != digest {
 		t.Fatal("open world download lost bytes during local eviction", err)
 	}
-	requested, accepted, err := worldManager.RequestRestore(ctx, "plaza")
+	requested, accepted, err := worldManager.RequestRestore(ctx, "fixture")
 	if err != nil || !accepted || requested.State != "archived" || requested.Restore.Attempt != 1 {
 		t.Fatalf("world restore request: %+v %t %v", requested, accepted, err)
 	}
-	requested, accepted, err = worldManager.RequestRestore(ctx, "plaza")
+	requested, accepted, err = worldManager.RequestRestore(ctx, "fixture")
 	if err != nil || !accepted || requested.Restore.Attempt != 1 {
 		t.Fatal("world restore attempt was duplicated", err)
 	}
@@ -554,7 +549,7 @@ func realArchiveLifecycle(t *testing.T, remote bool) {
 	if err = m.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	active, err := m.Worlds.Get(ctx, "plaza")
+	active, err := m.Worlds.Get(ctx, "fixture")
 	if err != nil || active.State != "active" || active.Restore.Status != "succeeded" || active.Restore.Attempt != 1 {
 		t.Fatalf("world restore: %+v %v", active, err)
 	}

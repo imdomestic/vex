@@ -129,6 +129,45 @@ func TestSetupResumesCompletedRegistration(t *testing.T) {
 	}
 }
 
+func TestSetupRecognizesEarlierRegistrationScriptFiles(t *testing.T) {
+	private := func() string {
+		t.Helper()
+		directory := t.TempDir()
+		if err := os.Chmod(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		return directory
+	}
+	directory := private()
+	data, err := json.Marshal(map[string]any{"id": 5366762, "slug": "vex-imdomestic", "client_id": "Iv23li5DpGaXG30bErGB", "html_url": "https://github.com/apps/vex-imdomestic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = privateFile(filepath.Join(directory, "github-app.json"), data); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := NewSetup("imdomestic", "Vex", directory, "http://127.0.0.1:18793")
+	if err != nil || setup.app == nil || setup.app.Slug != "vex-imdomestic" || setup.app.ClientID != "Iv23li5DpGaXG30bErGB" {
+		t.Fatal("earlier registration metadata was not recognized", err)
+	}
+	for _, name := range []string{"github-app.pem", "github-webhook.key"} {
+		partial := private()
+		if err = privateFile(filepath.Join(partial, name), []byte("registration file")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = NewSetup("imdomestic", "Vex", partial, "http://127.0.0.1:18793"); err == nil {
+			t.Fatalf("a directory containing %s accepted a new registration", name)
+		}
+	}
+	invalid := private()
+	if err = privateFile(filepath.Join(invalid, "github-app.json"), []byte(`{"id":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = NewSetup("imdomestic", "Vex", invalid, "http://127.0.0.1:18793"); err == nil {
+		t.Fatal("invalid earlier registration metadata accepted")
+	}
+}
+
 func TestSetupRejectsInvalidStateAndHost(t *testing.T) {
 	_, server := setupServer(t, t.TempDir())
 	response, err := server.Client().PostForm(server.URL+"/begin", url.Values{"state": {"invalid"}})

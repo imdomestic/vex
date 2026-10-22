@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/imdomestic/vex/controller/internal/auth"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/slp"
 	"github.com/imdomestic/vex/controller/internal/store"
@@ -59,6 +60,18 @@ func TestRealClosedRoomPruningPreservesGenerationThroughTankArchive(t *testing.T
 				return tx.Put(h.ctx, "snapshot", snapshot.ID, snapshot)
 			}); err != nil {
 				t.Fatal(err)
+			}
+			// 客户端完成加入后删除自己的租约；这里代替客户端删除，使房间不再受有效租约保护。
+			leases, err := store.All[model.LeaseRecord](h.ctx, h.db, "lease")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, lease := range leases {
+				if lease.RoomID == roomID {
+					if err = h.manager.DeleteLease(h.ctx, roomID, lease.ID, auth.Identity{User: "integration"}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if err = h.manager.PruneClosed(h.ctx); err != nil {
 				t.Fatal(err)

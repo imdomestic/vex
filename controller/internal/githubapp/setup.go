@@ -59,22 +59,27 @@ func NewSetup(owner, name, directory, base string) (*Setup, error) {
 		return nil, fmt.Errorf("App output directory must be a private directory (0700)")
 	}
 	setup := &Setup{owner: owner, name: name, directory: directory, base: base, state: rand.Text(), failure: make(chan error, 1)}
-	data, err := os.ReadFile(filepath.Join(directory, "app.json"))
-	if err == nil {
+	// github-app.json、github-app.pem 与 github-webhook.key 是早期注册脚本的文件名，同样表示该目录已有注册。
+	for _, metadata := range []string{"app.json", "github-app.json"} {
+		data, err := os.ReadFile(filepath.Join(directory, metadata))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 		var registration AppRegistration
 		if err = json.Unmarshal(data, &registration); err != nil || registration.ID <= 0 || registration.Slug == "" || registration.ClientID == "" {
-			return nil, fmt.Errorf("existing app.json is invalid")
+			return nil, fmt.Errorf("existing %s is invalid", metadata)
 		}
 		setup.app = &registration
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	} else {
-		for _, path := range []string{"registration-started", "private-key.pem", "client-secret"} {
-			if _, err := os.Lstat(filepath.Join(directory, path)); err == nil {
-				return nil, fmt.Errorf("App registration already started in this directory; inspect the existing GitHub App before starting another registration")
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
+		return setup, nil
+	}
+	for _, path := range []string{"registration-started", "private-key.pem", "client-secret", "github-app.pem", "github-webhook.key"} {
+		if _, err := os.Lstat(filepath.Join(directory, path)); err == nil {
+			return nil, fmt.Errorf("App registration already started in this directory; inspect the existing GitHub App before starting another registration")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 	}
 	return setup, nil

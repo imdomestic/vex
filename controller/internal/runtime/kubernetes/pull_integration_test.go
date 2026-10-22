@@ -3,11 +3,7 @@
 package kubernetes_test
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
-	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +13,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +25,7 @@ func TestRealPreviewRollsAfterLeaseAndPreservesWorld(t *testing.T) {
 	h.manager.Cfg.Policy.OnNewHead = "when_empty"
 	h.manager.Cfg.Rooms.DefaultSeed = "empty"
 	h.manager.Cfg.Rooms.PRIdle = "10m"
-	next := actualPreviewBuild(t, h)
+	next := previewBuild(t, h)
 	if next.SHA == h.manifest.SHA || next.Loader != h.manifest.Loader || next.Minecraft == nil || *next.Minecraft != *h.manifest.Minecraft {
 		t.Fatal("preview rolling requires two distinct real builds for the same loader and Minecraft")
 	}
@@ -154,61 +151,12 @@ func TestRealPreviewRollsAfterLeaseAndPreservesWorld(t *testing.T) {
 	t.Log("closed preview retained two digest-verified snapshots, normally stopped Minecraft and removed its isolated runtime PVC")
 }
 
-func actualPreviewBuild(t *testing.T, h *lifecycleHarness) model.Build {
+// previewBuild 在测试项目的 PR 分支上提交新的改动，并导入它的 CI Build。
+func previewBuild(t *testing.T, h *lifecycleHarness) model.Build {
 	t.Helper()
-	path := os.Getenv("VEX_IT_NEXT_BUILD")
-	if path == "" {
-		t.Fatal("next actual preview build manifest is required")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	sha := h.project.Commit(t, "feat/preview", "update the preview", map[string]string{"PREVIEW.md": "预览更新\n"})
+	if err := h.manager.Git.Refresh(h.ctx); err != nil {
 		t.Fatal(err)
 	}
-	var build model.Build
-	if err = json.Unmarshal(data, &build); err != nil || build.Status != "ready" {
-		t.Fatal("next preview fixture is not a ready real build", err)
-	}
-	resolved, err := config.LoadDaemon(config.Options{Args: []string{"--config", os.Getenv("VEX_IT_CONFIG")}, Environ: []string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := resolved.Config.ForProject(build.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	loadActualBuildManifest(t, source, os.Getenv("VEX_IT_MIRROR"), &build)
-	for i := range build.Files {
-		file := &build.Files[i]
-		if !filepath.IsLocal(file.Path) || file.Path == "." {
-			t.Fatal("actual preview artifact path is not local")
-		}
-		original := filepath.Join(source.DataDir, filepath.FromSlash(file.Path))
-		digest, size, err := worldarchive.Digest(original)
-		if err != nil || digest != file.SHA256 || size != file.Size {
-			t.Fatal("next preview actual artifact differs from manifest", err)
-		}
-		destination := filepath.Join(h.cfg.DataDir, filepath.FromSlash(file.Path))
-		if err = os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-			t.Fatal(err)
-		}
-		input, err := os.Open(original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err != nil {
-			input.Close()
-			t.Fatal(err)
-		}
-		_, copyErr := io.Copy(output, input)
-		if err = errors.Join(copyErr, input.Close(), output.Close()); err != nil {
-			t.Fatal(err)
-		}
-		file.URL = "/v2/projects/" + h.cfg.ID + "/builds/" + build.ID + "/files/" + url.PathEscape(file.Name)
-	}
-	build.Project = h.cfg.ID
-	if err = h.db.Put(h.ctx, "build", build.ID, build); err != nil {
-		t.Fatal(err)
-	}
-	return build
+	return testproject.ImportBuild(t, h.manager.Builds, sha)
 }

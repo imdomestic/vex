@@ -8,7 +8,7 @@ import (
 )
 
 func TestLostRecoveryPreservesIdentityAndStopIntent(t *testing.T) {
-	room := model.Room{State: "lost", Label: "testing", Generation: 4, BuildID: "fabric-fc16eaac252b"}
+	room := model.Room{State: "lost", Label: "testing", Generation: 4, BuildID: "fabric-0123456789ab"}
 	status := runtime.RoomStatus{ProcessExists: true, Ready: true, Generation: 4, BuildID: room.BuildID}
 	if lostRecoveryState(room, Runtime{}, status) != "starting" {
 		t.Fatal("matching ready process must be reverified")
@@ -28,7 +28,7 @@ func TestLostRecoveryPreservesIdentityAndStopIntent(t *testing.T) {
 		t.Fatal("old generation was resumed")
 	}
 	status.Generation = room.Generation
-	status.BuildID = "fabric-cb7f59da8fe5"
+	status.BuildID = "fabric-ba9876543210"
 	if lostRecoveryState(room, Runtime{}, status) != "stopping" {
 		t.Fatal("different build was resumed")
 	}

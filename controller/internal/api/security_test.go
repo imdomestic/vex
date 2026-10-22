@@ -240,7 +240,7 @@ func TestRoomCredentialsCannotCrossProjectBuildOrSeed(t *testing.T) {
 	for _, path := range []string{
 		"/v2/projects/beta/builds/" + room.BuildID + "/files/mod.jar",
 		"/v2/projects/alpha/builds/" + otherBuild.ID + "/files/mod.jar",
-		"/v2/projects/alpha/worlds/plaza/revisions/1/download",
+		"/v2/projects/alpha/worlds/spawn/revisions/1/download",
 	} {
 		environment.failure(t, "GET", path, token, "", 404, "not_found")
 	}

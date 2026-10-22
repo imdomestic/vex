@@ -58,7 +58,7 @@ func TestPackCanonicalRouteUsesAuthenticatedWorldStorage(t *testing.T) {
 	api := New(global, map[string]*Server{"example": {Cfg: cfg, DB: projectDB, Rooms: &rooms.Manager{Worlds: manager}}}, identity, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
-	path := "/v2/projects/example/packs/plaza/" + strings.Repeat("a", 64) + ".zip"
+	path := "/v2/projects/example/packs/spawn/" + strings.Repeat("a", 64) + ".zip"
 	signed, err := identity.SignURL(server.URL, path, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestPackCanonicalRouteUsesAuthenticatedWorldStorage(t *testing.T) {
 		{server.URL + path, "", 401, "unauthorized"},
 		{server.URL + path, token, 404, "not_found"},
 		{signed, "", 404, "not_found"},
-		{server.URL + "/v2/projects/example/packs/plaza/invalid.zip", token, 400, "invalid_request"},
+		{server.URL + "/v2/projects/example/packs/spawn/invalid.zip", token, 400, "invalid_request"},
 		{server.URL + strings.TrimSuffix(path, ".zip") + ".jar", token, 400, "invalid_request"},
 	} {
 		request, err := http.NewRequest(http.MethodGet, test.url, nil)

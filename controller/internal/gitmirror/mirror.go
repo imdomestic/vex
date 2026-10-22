@@ -176,14 +176,30 @@ func (m *Mirror) branches(ctx context.Context) ([]Ref, error) {
 	return refs, nil
 }
 
+// VerifyCommit 确认提交仍在远端现有历史中，用于新建构建、房间或导入 CI 产物。
 func (m *Mirror) VerifyCommit(ctx context.Context, sha string) error {
 	if err := m.mu.Lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
-	return m.verifyCommit(ctx, sha)
+	if err := m.verifyCommit(ctx, sha); err != nil {
+		return err
+	}
+	refs, err := m.git(ctx, "for-each-ref", "--count=1", "--format=%(refname)", "--contains", sha)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(refs) == "" {
+		return unavailable()
+	}
+	return nil
 }
 
+func unavailable() error {
+	return model.Failure("commit_unavailable", "提交不在仓库的现有历史中，不能在这个提交上重新构建或创建房间")
+}
+
+// verifyCommit 只检查本地镜像中的提交对象，读取已有记录的历史内容时使用。
 func (m *Mirror) verifyCommit(ctx context.Context, sha string) error {
 	if !fullSHA.MatchString(sha) {
 		return model.Failure("invalid_request", "commit sha must contain 40 lowercase hexadecimal characters")
@@ -197,12 +213,63 @@ func (m *Mirror) verifyCommit(ctx context.Context, sha string) error {
 		if !errors.As(err, &failure) {
 			return err
 		}
-		return model.Failure("not_found", "commit is absent from the local git mirror; a successful remote refresh is required before building it")
+		return unavailable()
 	}
 	if strings.TrimSpace(kind) != "commit" {
 		return model.Failure("not_found", "object is not a commit")
 	}
 	return nil
+}
+
+// CommitInfo 读取提交元数据，供新建记录时写入记录本身。
+func (m *Mirror) CommitInfo(ctx context.Context, sha string) (model.CommitInfo, error) {
+	if err := m.mu.Lock(ctx); err != nil {
+		return model.CommitInfo{}, err
+	}
+	defer m.mu.Unlock()
+	if err := m.verifyCommit(ctx, sha); err != nil {
+		return model.CommitInfo{}, err
+	}
+	output, err := m.git(ctx, "show", "--no-patch", "--format=%H%x00%s%x00%an%x00%aI", sha, "--")
+	if err != nil {
+		return model.CommitInfo{}, err
+	}
+	fields := strings.Split(strings.TrimSuffix(output, "\n"), "\x00")
+	if len(fields) != 4 || fields[0] != sha {
+		return model.CommitInfo{}, fmt.Errorf("invalid git show output")
+	}
+	when, err := time.Parse(time.RFC3339, fields[3])
+	if err != nil {
+		return model.CommitInfo{}, fmt.Errorf("git author date: %w", err)
+	}
+	return model.CommitInfo{SHA: sha, Subject: fields[1], Author: fields[2], Time: when.UTC()}, nil
+}
+
+// Reachable 返回从镜像全部 ref 可以到达的提交；不在其中的提交已不属于远端现有历史。
+func (m *Mirror) Reachable(ctx context.Context) (map[string]bool, error) {
+	if err := m.mu.Lock(ctx); err != nil {
+		return nil, err
+	}
+	defer m.mu.Unlock()
+	refs, err := m.git(ctx, "for-each-ref", "--count=1", "--format=%(refname)")
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]bool{}
+	if strings.TrimSpace(refs) == "" {
+		return result, nil
+	}
+	output, err := m.git(ctx, "rev-list", "--all")
+	if err != nil {
+		return nil, err
+	}
+	for _, sha := range strings.Fields(output) {
+		if !fullSHA.MatchString(sha) {
+			return nil, fmt.Errorf("invalid git rev-list output")
+		}
+		result[sha] = true
+	}
+	return result, nil
 }
 
 func (m *Mirror) Commits(ctx context.Context, branch, before string, limit int) ([]model.Commit, error) {

@@ -7,18 +7,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"os"
 	"reflect"
 	"testing"
 
 	"github.com/imdomestic/vex/controller/internal/filehash"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 )
 
 func TestRealNeoForgeMetadataAndEmbeddedLibraries(t *testing.T) {
-	path := os.Getenv("VEX_IT_NEOFORGE_JAR")
-	if path == "" {
-		t.Skip("requires VEX_IT_NEOFORGE_JAR from an actual NeoForge universal release")
-	}
+	path := testfixture.File(t, "neoforge-26.3.0.45-beta-universal.jar")
 	ids, err := JarModIDs(path, "neoforge")
 	if err != nil {
 		t.Fatal(err)

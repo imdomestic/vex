@@ -116,6 +116,9 @@ func (m *Manager) SyncPull(ctx context.Context, pull model.Pull, builds []model.
 				if room.Generation == 0 {
 					room.SHA, room.BuildID, room.BehindHead = next.SHA, next.ID, false
 					rt.PendingSHA = ""
+					if err = m.setCommit(ctx, &room, &next); err != nil {
+						return err
+					}
 				} else if room.SHA != next.SHA {
 					rt.PendingSHA = next.SHA
 				} else {
@@ -159,6 +162,9 @@ func (m *Manager) pullStartRoom(ctx context.Context, room model.Room) (model.Roo
 		return room, model.Failure("build_mismatch", "PR 构建尚未具有完整有效的 manifest 信息")
 	}
 	room.SHA, room.BuildID, room.BehindHead = build.SHA, build.ID, false
+	if err := m.setCommit(ctx, &room, &build); err != nil {
+		return room, err
+	}
 	room.PreviewAccess = m.Cfg.CI.PreviewAccess
 	room.PR = &model.PullMetadata{Number: pull.Number, Title: pull.Title, Author: pull.Author, URL: pull.URL, HeadSHA: pull.HeadSHA, FromFork: pull.Fork}
 	return room, nil

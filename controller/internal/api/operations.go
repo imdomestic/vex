@@ -265,6 +265,21 @@ func (s *Server) roomLabel(w http.ResponseWriter, r *http.Request, id auth.Ident
 	return respond(w, status, room)
 }
 
+func (s *Server) roomResetWorld(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
+	var req struct {
+		Confirm string `json:"confirm"`
+		Seed    string `json:"seed"`
+	}
+	if err := decode(r, &req, false); err != nil {
+		return err
+	}
+	room, err := s.Rooms.ResetWorld(r.Context(), r.PathValue("id"), req.Confirm, req.Seed)
+	if err != nil {
+		return err
+	}
+	return respond(w, 200, room)
+}
+
 func (s *Server) roomDelete(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
 	if err := s.Rooms.Delete(r.Context(), r.PathValue("id")); err != nil {
 		return err

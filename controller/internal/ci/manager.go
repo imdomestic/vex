@@ -227,6 +227,15 @@ func (m *Manager) Poll(ctx context.Context) (result error) {
 		if errors.Is(acceptErr, errApprovalPending) || !accepted && acceptErr == nil {
 			continue
 		}
+		var failure *model.Error
+		if errors.As(acceptErr, &failure) && failure.Code == "commit_unavailable" {
+			// 刷新后运行的提交仍不在仓库的现有历史中，例如项目改写了历史；这个运行不再导入，也不阻止其他运行。
+			record.Done, record.Status, record.Error, record.UpdatedAt = true, "skipped", failure.Message, time.Now().UTC()
+			if err = m.db.Put(ctx, "ci_run", key, record); err != nil {
+				return err
+			}
+			continue
+		}
 		if acceptErr != nil {
 			return acceptErr
 		}

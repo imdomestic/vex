@@ -119,6 +119,7 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 	snapshotID := fmt.Sprintf("%s-g%d", id.RoomID, id.Generation)
 	snapshot := model.Snapshot{Project: s.Cfg.ID, ID: snapshotID, Path: filepath.ToSlash(filepath.Join("snapshots", id.RoomID, snapshotID+".tar.gz")), RoomID: id.RoomID, RoomGeneration: id.Generation, BuildID: id.BuildID, Minecraft: *build.Minecraft, SHA256: hashes.SHA256, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Size: hashes.Size, CreatedAt: time.Now().UTC(), LocalAvailable: true}
 	snapshot.ManifestSHA, snapshot.WorldExtraRootEntries = build.SHA, append([]string{}, build.WorldExtraRootEntries...)
+	snapshot.Commit, snapshot.Manifest, snapshot.CommitMissingAt = build.Commit, build.Manifest, build.CommitMissingAt
 	snapshot, created, err := s.Rooms.PublishSnapshot(r.Context(), snapshot, f.Name())
 	if err != nil {
 		return err

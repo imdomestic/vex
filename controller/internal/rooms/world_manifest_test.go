@@ -51,8 +51,17 @@ func manifestMigrationManager(t *testing.T) (*Manager, string, string) {
 	return m, previous, current
 }
 
-func TestWorldManifestMigrationUsesCachedGitAndPreservesArchiveBytes(t *testing.T) {
+func TestRecordBackfillUsesCachedGitAndPreservesArchiveBytes(t *testing.T) {
 	m, previous, current := manifestMigrationManager(t)
+	room, err := m.Get(t.Context(), "main-fabric")
+	if err != nil || room.Commit == nil || room.Commit.SHA != room.SHA || room.Commit.Subject != "初始分支" {
+		t.Fatal("branch room lacks the metadata of its registered commit", room.Commit, err)
+	}
+	branchCommit := *room.Commit
+	room.Commit = nil
+	if err = m.DB.Put(t.Context(), "room", room.ID, room); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	snapshot := model.Snapshot{Project: m.Cfg.ID, ID: "main-fabric-g1", RoomID: "main-fabric", RoomGeneration: 1, BuildID: BuildID(previous, "fabric"), Minecraft: "26.3", CreatedAt: now, CapturedAt: now, TankVerifiedAt: &now}
 	revisions := []model.WorldRevision{
@@ -87,13 +96,17 @@ func TestWorldManifestMigrationUsesCachedGitAndPreservesArchiveBytes(t *testing.
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err = m.InitializeWorldRecords(t.Context()); err != nil {
-			t.Fatal(err)
+		issues, err := m.Backfill(t.Context())
+		if err != nil || len(issues) != 0 {
+			t.Fatal(issues, err)
 		}
 	}
 	var migrated model.Snapshot
 	if err = m.DB.Get(t.Context(), "snapshot", snapshot.ID, &migrated); err != nil || migrated.ManifestSHA != previous || !slices.Equal(migrated.WorldExtraRootEntries, []string{"project-state.json"}) || migrated.TankVerifiedAt == nil || !migrated.TankVerifiedAt.Equal(now) {
 		t.Fatal("evicted build snapshot did not recover its exact original commit policy", err)
+	}
+	if migrated.Commit == nil || migrated.Commit.SHA != previous || migrated.Commit.Subject != "world manifest with project state" || migrated.Manifest == nil || !slices.Equal(migrated.Manifest.World.ExtraRootEntries, []string{"project-state.json"}) {
+		t.Fatal("snapshot did not record its commit metadata and manifest", migrated.Commit)
 	}
 	for _, initial := range revisions {
 		var revision model.WorldRevision
@@ -107,6 +120,12 @@ func TestWorldManifestMigrationUsesCachedGitAndPreservesArchiveBytes(t *testing.
 		if revision.ManifestSHA != expected || revision.ExtraRootEntries == nil || (initial.SnapshotID != nil && !slices.Equal(revision.ExtraRootEntries, migrated.WorldExtraRootEntries)) {
 			t.Fatal("world manifest source differs from its publication or promotion origin")
 		}
+		if revision.Commit == nil || revision.Commit.SHA != expected || revision.Manifest == nil || !slices.Equal(revision.Manifest.World.ExtraRootEntries, revision.ExtraRootEntries) {
+			t.Fatal("world revision did not record its commit metadata and manifest", revision.Commit)
+		}
+	}
+	if room, err = m.Get(t.Context(), "main-fabric"); err != nil || room.Commit == nil || !reflect.DeepEqual(*room.Commit, branchCommit) {
+		t.Fatal("room commit metadata was not backfilled", room.Commit, err)
 	}
 	after, err := store.All[model.Transfer](t.Context(), m.DB, "transfer")
 	if err != nil || !reflect.DeepEqual(before, after) {
@@ -120,7 +139,7 @@ func TestWorldManifestMigrationUsesCachedGitAndPreservesArchiveBytes(t *testing.
 	}
 }
 
-func TestWorldManifestMigrationRejectsUnresolvableHistoryAtomically(t *testing.T) {
+func TestRecordBackfillListsUnresolvableHistoryAndCompletesOthers(t *testing.T) {
 	m, previous, _ := manifestMigrationManager(t)
 	valid := model.Snapshot{Project: m.Cfg.ID, ID: "a-valid", BuildID: BuildID(previous, "fabric"), Minecraft: "26.3"}
 	invalid := model.Snapshot{Project: m.Cfg.ID, ID: "z-missing", BuildID: "fabric-000000000000", Minecraft: "26.3"}
@@ -129,22 +148,36 @@ func TestWorldManifestMigrationRejectsUnresolvableHistoryAtomically(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	if err := m.InitializeWorldRecords(t.Context()); err == nil {
-		t.Fatal("missing historical commit accepted during world migration")
+	issues, err := m.Backfill(t.Context())
+	if err != nil || len(issues) != 1 || issues[0].Kind != "snapshot" || issues[0].ID != invalid.ID || issues[0].Reason != "commit_unavailable" {
+		t.Fatal("unresolvable historical commit was not listed", issues, err)
+	}
+	var completed model.Snapshot
+	if err = m.DB.Get(t.Context(), "snapshot", valid.ID, &completed); err != nil || completed.ManifestSHA != previous || completed.Commit == nil || completed.Manifest == nil {
+		t.Fatal("independent snapshot was not backfilled", completed, err)
 	}
 	var unchanged model.Snapshot
-	if err := m.DB.Get(t.Context(), "snapshot", valid.ID, &unchanged); err != nil || !reflect.DeepEqual(unchanged, valid) {
-		t.Fatal("failed manifest migration partially updated another snapshot", err)
+	if err = m.DB.Get(t.Context(), "snapshot", invalid.ID, &unchanged); err != nil || !reflect.DeepEqual(unchanged, invalid) {
+		t.Fatal("unresolvable snapshot was changed", err)
 	}
-	if _, err := m.Git.ResolveCommitPrefix(t.Context(), "--all"); err == nil {
+	if _, err = m.Git.ResolveCommitPrefix(t.Context(), "--all"); err == nil {
 		t.Fatal("commit resolver accepted a Git option")
 	}
 }
 
-func TestEmptyWorldMigrationDoesNotRequireGitOrDefaultBranch(t *testing.T) {
+func TestEmptyRecordBackfillDoesNotRequireGitOrDefaultBranch(t *testing.T) {
 	m, _, _ := freshnessManager(t)
-	m.Git, m.Builds = nil, nil
-	if err := m.InitializeWorldRecords(t.Context()); err != nil {
+	rooms, err := m.List(t.Context())
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, room := range rooms {
+		if err = m.DB.Delete(t.Context(), "room", room.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.Git, m.Builds = nil, nil
+	if issues, err := m.Backfill(t.Context()); err != nil || len(issues) != 0 {
+		t.Fatal(issues, err)
 	}
 }

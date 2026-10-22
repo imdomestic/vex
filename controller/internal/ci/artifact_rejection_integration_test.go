@@ -41,7 +41,7 @@ func TestRealGitHubArtifactsRejectedAndChecksFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const owner, repository = "imdomestic", "vex-example-fabric"
+	owner, repository := githubRepository(t, "VEX_IT_GITHUB_REPOSITORY")
 	client, err := app.Repository(t.Context(), owner+"/"+repository)
 	if err != nil {
 		t.Fatal(err)

@@ -20,6 +20,6 @@ vex world publish /path/to/world -p example-mod --world plaza
 
 CLI 配置位于 `~/.config/vex/config.toml`，登录成功会登记 `[servers.<name>]` 的 URL 和显示名称；`default_server` 指定默认服务器，`--server <name>` 选择其他服务器。服务器 URL 经过规范化后作为独立的凭据索引。每台服务器只有一个可访问项目时自动选择该项目；存在多个项目时使用 `-p` 选择。
 
-设计范围见 [Vex 设计](docs/design/vex.md) 和 [P1 补充指令](docs/directives/2026-10-17-vex-p1-amendment.md)。构建、NixOS 部署、真实组件测试和系统切换保护见 [部署说明](deploy/README.md)。实际验收记录见 [P1 报告](docs/reports/2026-10-17-vex-p1.md)。
+设计范围见 [Vex 设计](docs/design/vex.md) 和 [P1 补充指令](docs/directives/2026-10-17-vex-p1-amendment.md)。构建、NixOS 部署、真实组件测试和系统切换保护见 [部署说明](deploy/README.md)；测试原则、固定测试文件与集成测试变量见 [开发说明](docs/development.md)。实际验收记录见 [P1 报告](docs/reports/2026-10-17-vex-p1.md)。
 
 系统配置由独立的 `imdomestic/nix-config` 仓库管理，通过本仓库 `nixosModules.vexd` 引入服务模块；应用由根 flake 的 `packages.x86_64-linux.vex` 构建。早期实施与归档工具保存在 [历史目录](docs/reports/archive/README.md)，首次系统搭建配置保存在 [bootstrap 归档](docs/reports/bootstrap/README.md)。

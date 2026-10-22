@@ -11,6 +11,15 @@ import (
 type ManifestPolicy struct {
 	SHA      string
 	Document manifest.Document
+	Commit   *model.CommitInfo
+}
+
+// snapshotPolicy 只使用快照记录本身保存的提交与清单。
+func snapshotPolicy(snapshot model.Snapshot) (ManifestPolicy, error) {
+	if snapshot.Manifest == nil || snapshot.WorldExtraRootEntries == nil {
+		return ManifestPolicy{}, model.Failure("conflict", "快照没有记录提交清单，无法提升为世界")
+	}
+	return ManifestPolicy{SHA: snapshot.ManifestSHA, Document: *snapshot.Manifest, Commit: snapshot.Commit}, nil
 }
 
 func (p ManifestPolicy) Validate() error {

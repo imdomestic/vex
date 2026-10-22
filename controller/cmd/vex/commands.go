@@ -175,6 +175,15 @@ func planCommand(ctx context.Context, global *pflag.FlagSet, args []string) (req
 		if action == "start" && flags.Changed("seed") {
 			plan.Body = map[string]string{"seed": *seed}
 		}
+	case "reset-world":
+		if args[0] != "rooms" {
+			return plan, resolved, fmt.Errorf("reset-world requires a room")
+		}
+		body := map[string]string{}
+		if flags.Changed("seed") {
+			body["seed"] = *seed
+		}
+		plan.Method, plan.Path, plan.Body, plan.Confirm = http.MethodPost, plan.Path+"/reset-world", body, positionals[1]
 	case "label":
 		if args[0] != "rooms" || !flags.Changed("label") {
 			return plan, resolved, fmt.Errorf("rooms label requires --label")

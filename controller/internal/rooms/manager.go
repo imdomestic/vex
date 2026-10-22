@@ -141,6 +141,9 @@ func (m *Manager) create(ctx context.Context, kind, sha, loader, seed, world str
 		seed = m.Cfg.Rooms.DefaultSeed
 	}
 	room := m.newRoom(id, kind, sha, loader, seed)
+	if err = m.setCommit(ctx, &room, nil); err != nil {
+		return room, false, err
+	}
 	if kind == "world" {
 		room.World = &world
 		room.Seed = "world:" + world
@@ -207,6 +210,9 @@ func (m *Manager) syncBranches(ctx context.Context) error {
 				room.BehindHead = false
 				if room.Seed == "" && room.SeedResolved == nil {
 					room.Seed = m.Cfg.Rooms.DefaultSeed
+				}
+				if err = m.setCommit(ctx, &room, nil); err != nil {
+					return err
 				}
 			}
 			if err = m.DB.Put(ctx, "room", id, room); err != nil {
@@ -295,6 +301,9 @@ func (m *Manager) refresh(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	if err = m.syncBranches(ctx); err != nil {
+		return false, err
+	}
+	if err = m.MarkMissingCommits(ctx); err != nil {
 		return false, err
 	}
 	after, err := m.Branches(ctx)
@@ -516,6 +525,9 @@ func (m *Manager) start(ctx context.Context, id string, seed *string, identity a
 			}
 			if !found {
 				return result, 0, model.Failure("not_found", "远端分支已经不存在")
+			}
+			if err = m.setCommit(ctx, &room, nil); err != nil {
+				return result, 0, err
 			}
 		}
 		if !rt.WorldExists && (room.SeedResolved == nil || room.State == "closed") {

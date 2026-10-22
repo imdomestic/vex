@@ -3,11 +3,9 @@
 package kubernetes_test
 
 import (
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +15,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/rooms"
 	backend "github.com/imdomestic/vex/controller/internal/runtime/kubernetes"
 	"github.com/imdomestic/vex/controller/internal/slp"
-	"github.com/imdomestic/vex/controller/internal/worlds"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -187,19 +185,12 @@ func TestRealRoomFailureIsolationRouteRecoveryAndCapacity(t *testing.T) {
 	if err != nil || workload.Spec.Replicas == nil || *workload.Spec.Replicas != 0 {
 		t.Fatal("failed process replicas changed", err)
 	}
-	metadataBytes, err := os.ReadFile(os.Getenv("VEX_IT_WORLD_METADATA"))
+	metadata := model.WorldMetadata{ID: "fixture", Title: "Vex 固定测试世界", Minecraft: *h.manifest.Minecraft, Requires: model.Requirements{Loaders: []string{h.manifest.Loader}, Mods: []string{}}, Source: model.Source{Scale: 1}}
+	policy, err := h.manager.DefaultWorldManifest(h.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var metadata model.WorldMetadata
-	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
-		t.Fatal(err)
-	}
-	document, err := h.manager.Builds.Manifest(h.ctx, h.manifest.SHA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = h.manager.Worlds.Publish(h.ctx, metadata, os.Getenv("VEX_IT_WORLD_ARCHIVE"), worlds.ManifestPolicy{SHA: h.manifest.SHA, Document: document}); err != nil {
+	if _, _, err = h.manager.Worlds.Publish(h.ctx, metadata, testfixture.File(t, "world-26.3.tar.gz"), policy); err != nil {
 		t.Fatal(err)
 	}
 	next, _, err := h.manager.Create(h.ctx, "world", h.manifest.SHA, h.manifest.Loader, "", metadata.ID)

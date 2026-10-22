@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/imdomestic/vex/controller/internal/manifest"
+)
 
 type Error struct {
 	Code    string        `json:"code"`
@@ -63,6 +67,33 @@ type Build struct {
 	ClientFingerprint     string      `json:"clientFingerprint"`
 	WorldExtraRootEntries []string    `json:"worldExtraRootEntries"`
 	RoomMemory            string      `json:"roomMemory"`
+
+	// 创建记录时写入的提交元数据与解析后的清单；commitMissingAt 表示提交已不在仓库的现有历史中。
+	Commit          *CommitInfo        `json:"commit"`
+	Manifest        *manifest.Document `json:"manifest"`
+	CommitMissingAt *time.Time         `json:"commitMissingAt"`
+}
+
+// RecordIssue 是补录时无法从镜像取得所缺内容的记录。
+type RecordIssue struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	SHA    string `json:"sha"`
+	Reason string `json:"reason"`
+}
+
+// RecordBackfill 是项目最近一次补录的结果。
+type RecordBackfill struct {
+	CheckedAt time.Time     `json:"checkedAt"`
+	Issues    []RecordIssue `json:"issues"`
+}
+
+// CommitInfo 是记录创建时从 Git 读取的提交元数据，之后只从记录本身读取。
+type CommitInfo struct {
+	SHA     string    `json:"sha"`
+	Subject string    `json:"subject"`
+	Author  string    `json:"author"`
+	Time    time.Time `json:"time"`
 }
 
 type BuildSummary struct {
@@ -129,6 +160,9 @@ type Room struct {
 	PR            *PullMetadata `json:"pr,omitempty"`
 	PullNumber    *int          `json:"pullNumber,omitempty"`
 	PreviewAccess string        `json:"previewAccess,omitempty"`
+
+	Commit          *CommitInfo `json:"commit"`
+	CommitMissingAt *time.Time  `json:"commitMissingAt"`
 }
 
 type PullMetadata struct {
@@ -297,6 +331,10 @@ type WorldRevision struct {
 	World            WorldFile  `json:"world"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	TankVerifiedAt   *time.Time `json:"tankVerifiedAt"`
+
+	Commit          *CommitInfo        `json:"commit"`
+	Manifest        *manifest.Document `json:"manifest"`
+	CommitMissingAt *time.Time         `json:"commitMissingAt"`
 }
 
 type World struct {
@@ -358,6 +396,10 @@ type Snapshot struct {
 	LocalAvailable        bool       `json:"localAvailable"`
 	TankVerifiedAt        *time.Time `json:"tankVerifiedAt"`
 	Restore               *Restore   `json:"restore"`
+
+	Commit          *CommitInfo        `json:"commit"`
+	Manifest        *manifest.Document `json:"manifest"`
+	CommitMissingAt *time.Time         `json:"commitMissingAt"`
 }
 
 type HopDestination struct {

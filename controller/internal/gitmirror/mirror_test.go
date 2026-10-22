@@ -69,7 +69,7 @@ func TestUnavailableRemotePreservesCachedHistoryAndEmptyMirror(t *testing.T) {
 		t.Fatalf("empty mirror: %+v %v", refs, err)
 	}
 	var failure *model.Error
-	if err = empty.VerifyCommit(ctx, sha); !errors.As(err, &failure) || failure.Code != "not_found" || !strings.Contains(failure.Message, "remote refresh") {
+	if err = empty.VerifyCommit(ctx, sha); !errors.As(err, &failure) || failure.Code != "commit_unavailable" {
 		t.Fatalf("missing source error: %v", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestMirrorRejectsInvalidAndAbsentCommits(t *testing.T) {
 	if err = mirror.VerifyCommit(ctx, sha); err != nil {
 		t.Fatal(err)
 	}
-	for input, code := range map[string]string{"--all": "invalid_request", strings.Repeat("0", 40): "not_found", tagSHA: "not_found"} {
+	for input, code := range map[string]string{"--all": "invalid_request", strings.Repeat("0", 40): "commit_unavailable", tagSHA: "not_found"} {
 		var failure *model.Error
 		if err = mirror.VerifyCommit(ctx, input); !errors.As(err, &failure) || failure.Code != code {
 			t.Fatalf("verification %q: %v", input, err)

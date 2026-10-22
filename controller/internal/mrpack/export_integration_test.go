@@ -21,24 +21,19 @@ import (
 
 	"github.com/Tnze/go-mc/nbt"
 	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 )
 
 func TestActualBuildExportsDeterministicRoomAndBuildPacks(t *testing.T) {
-	manifestPath, dataDir, work := os.Getenv("VEX_IT_BUILD"), os.Getenv("VEX_IT_PROJECT_DATA"), os.Getenv("VEX_IT_WORK")
-	if manifestPath == "" || dataDir == "" || work == "" {
-		t.Skip("requires a real ready build and its actual project artifact directory")
+	work := os.Getenv("VEX_IT_WORK")
+	if work == "" {
+		t.Skip("requires an ignored workspace for mrpack evidence")
 	}
 	if !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
 		t.Fatal("mrpack evidence must remain in an ignored workspace")
 	}
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var build model.Build
-	if err = json.Unmarshal(data, &build); err != nil {
-		t.Fatal(err)
-	}
+	fixture := testproject.NewFixture(t, "mrpack-fixture")
+	build, dataDir := fixture.Build, fixture.Config.DataDir
 	open := func(_ context.Context, entry model.BuildFile) (*os.File, error) {
 		if !filepath.IsLocal(entry.Path) || entry.Path == "." {
 			return nil, fmt.Errorf("artifact path is not project-relative")
@@ -46,9 +41,10 @@ func TestActualBuildExportsDeterministicRoomAndBuildPacks(t *testing.T) {
 		return os.Open(filepath.Join(dataDir, filepath.FromSlash(entry.Path)))
 	}
 	room := model.Room{Project: build.Project, ID: "pr123-fabric", Kind: "pr", State: "stopped", BuildID: build.ID, Host: "pr123-fabric--" + build.Project + ".integration.vex.internal", Port: 25565}
-	if err = os.MkdirAll(work, 0700); err != nil {
+	if err := os.MkdirAll(work, 0700); err != nil {
 		t.Fatal(err)
 	}
+	var err error
 	for _, target := range []struct {
 		name string
 		room *model.Room

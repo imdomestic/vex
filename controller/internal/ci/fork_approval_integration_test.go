@@ -45,8 +45,9 @@ func TestRealPersonalForkRequiresMaintainerApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const owner, repository = "imdomestic", "vex-example-fabric"
-	const fork = "linwh1te/vex-example-fabric"
+	owner, repository := githubRepository(t, "VEX_IT_GITHUB_REPOSITORY")
+	forkOwner, forkRepository := githubRepository(t, "VEX_IT_GITHUB_FORK")
+	fork := forkOwner + "/" + forkRepository
 	const workflow = ".github/workflows/vex-fork-it.yml"
 	client, err := app.Repository(t.Context(), owner+"/"+repository)
 	if err != nil {

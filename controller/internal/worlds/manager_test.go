@@ -35,7 +35,7 @@ func TestCompatibilityChecksVersionLoaderAndNamespaces(t *testing.T) {
 }
 
 func TestPublishedIdentifierValidation(t *testing.T) {
-	for _, id := range []string{"plaza", "tower-full", "a1"} {
+	for _, id := range []string{"spawn", "test-hub", "a1"} {
 		if !validPackID(id) {
 			t.Fatalf("valid pack ID rejected: %q", id)
 		}

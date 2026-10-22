@@ -22,6 +22,7 @@ func TestDeviceAPIRejectsUnavailableProviderAndUnknownHandles(t *testing.T) {
 		}
 	}
 	assertFailure("/v2/auth/device", map[string]string{}, 503, "provider_unavailable")
+	assertFailure("/v2/auth/device/cancel", map[string]string{"handle": strings.Repeat("a", 43)}, 503, "provider_unavailable")
 	assertFailure("/v2/auth/device/poll", map[string]string{"handle": strings.Repeat("a", 43), "client": "real HTTP test"}, 503, "provider_unavailable")
 	device, err := auth.NewDeviceFlow(t.Context(), service.Auth, "Iv23li5DpGaXG30bErGB")
 	if err != nil {
@@ -33,4 +34,8 @@ func TestDeviceAPIRejectsUnavailableProviderAndUnknownHandles(t *testing.T) {
 	assertFailure("/v2/auth/device/poll", map[string]string{"handle": "invalid", "client": "real HTTP test"}, 400, "invalid_request")
 	assertFailure("/v2/auth/device/poll", map[string]string{"handle": strings.Repeat("a", 43), "client": ""}, 400, "invalid_request")
 	assertFailure("/v2/auth/device/poll", map[string]string{"handle": strings.Repeat("a", 43), "client": "real HTTP test"}, 400, "expired_token")
+	assertFailure("/v2/auth/device/cancel", map[string]string{"handle": "invalid"}, 400, "invalid_request")
+	if status, _, _ := loginRequest(t, server, "POST", "/v2/auth/device/cancel", "", map[string]string{"handle": strings.Repeat("a", 43)}); status != 204 {
+		t.Fatalf("cancelling an unknown authorization returned HTTP %d", status)
+	}
 }

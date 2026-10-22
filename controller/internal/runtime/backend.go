@@ -87,6 +87,8 @@ type Backend interface {
 	StopRoom(context.Context, ResourceRef, StopOptions) error
 	ArchiveWorld(context.Context, ArchiveSpec) (ArchiveResult, error)
 	DeleteRoom(context.Context, ResourceRef, DeleteOptions) error
+	// DeleteWorld 按 UID 删除已停止房间的世界卷，返回被删除卷的 UID。
+	DeleteWorld(context.Context, ResourceRef) (string, error)
 	Logs(context.Context, ResourceRef, LogOptions) (string, error)
 	RCON(context.Context, ResourceRef, string) (string, error)
 	Capacity(context.Context) ([]model.Node, error)

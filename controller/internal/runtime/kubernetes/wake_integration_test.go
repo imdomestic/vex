@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +15,6 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/google/uuid"
 	"github.com/imdomestic/vex/controller/internal/config"
-	"github.com/imdomestic/vex/controller/internal/gitmirror"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/slp"
 	"github.com/imdomestic/vex/controller/internal/wake"
@@ -38,15 +35,7 @@ func TestRealSleepingRouteRestoresMinecraftAndPreservesWorld(t *testing.T) {
 	defer listener.Close()
 	h.manager.Cfg.Wake = config.Wake{Enabled: true, Listen: listener.Addr().String(), Endpoint: listener.Addr().String(), RateLimit: "1m"}
 	h.manager.Cfg.Rooms.DefaultSeed = "empty"
-	// 独立镜像从真实现有镜像获取对象，测试刷新不修改生产镜像。
-	mirror, err := gitmirror.New(os.Getenv("VEX_IT_MIRROR"), filepath.Join(h.root, "wake-mirror.git"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = mirror.Refresh(h.ctx); err != nil {
-		t.Fatal(err)
-	}
-	h.manager.Git = mirror
+	// 测试项目的 main 分支 head 就是固定 Build 的提交，同步后登记对应的分支房间。
 	if err = h.manager.SyncBranches(h.ctx); err != nil {
 		t.Fatal(err)
 	}

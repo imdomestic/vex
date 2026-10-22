@@ -35,6 +35,9 @@ func TestPullRegistrationTracksMetadataAndKeepsActiveBuild(t *testing.T) {
 		t.Fatal("ready PR registration did not preserve lazy state and metadata", err)
 	}
 	nextSHA := freshnessCommit(t, source, "预览提交更新")
+	if err = m.Git.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	next := model.Build{Project: m.Cfg.ID, ID: BuildID(nextSHA, "fabric"), SHA: nextSHA, Loader: "fabric", Status: "ready", Minecraft: &minecraft}
 	completePreviewMetadata(t, &next)
 	if err = m.DB.Put(t.Context(), "build", next.ID, next); err != nil {
@@ -52,7 +55,13 @@ func TestPullRegistrationTracksMetadataAndKeepsActiveBuild(t *testing.T) {
 	if err != nil || started.Room.Generation != 1 || started.Room.BuildID != next.ID {
 		t.Fatal("PR start did not accept the latest ready build", err)
 	}
+	if started.Room.Commit == nil || started.Room.Commit.SHA != nextSHA || started.Room.Commit.Subject != "预览提交更新" {
+		t.Fatal("PR room did not record the metadata of its accepted commit", started.Room.Commit)
+	}
 	thirdSHA := freshnessCommit(t, source, "运行期间新增提交")
+	if err = m.Git.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	third := model.Build{Project: m.Cfg.ID, ID: BuildID(thirdSHA, "fabric"), SHA: thirdSHA, Loader: "fabric", Status: "ready", Minecraft: &minecraft}
 	completePreviewMetadata(t, &third)
 	if err = m.DB.Put(t.Context(), "build", third.ID, third); err != nil {

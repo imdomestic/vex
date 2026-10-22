@@ -39,7 +39,11 @@ func TestRealPreviewPublicationAndMaintainerApprovals(t *testing.T) {
 	if err != nil {
 		t.Fatal("actual GitHub App initialization failed")
 	}
-	const owner, repo = "imdomestic", "vex-example-fabric"
+	owner, repo := githubRepository(t, "VEX_IT_GITHUB_REPOSITORY")
+	head := os.Getenv("VEX_IT_GITHUB_PR_HEAD")
+	if head == "" {
+		t.Fatal("VEX_IT_GITHUB_PR_HEAD must name the head branch of the authorized preview PR")
+	}
 	installation, err := app.Repository(t.Context(), owner+"/"+repo)
 	if err != nil {
 		t.Fatal(apiFailure("actual installation access", err))
@@ -52,7 +56,7 @@ func TestRealPreviewPublicationAndMaintainerApprovals(t *testing.T) {
 	if err != nil {
 		t.Fatal(apiFailure("read isolated preview PR", err))
 	}
-	if actual.GetState() != "open" || actual.GetHead().GetRef() != "feat/vex-ci-preview" || actual.GetHead().GetRepo().GetFullName() != owner+"/"+repo {
+	if actual.GetState() != "open" || actual.GetHead().GetRef() != head || actual.GetHead().GetRepo().GetFullName() != owner+"/"+repo {
 		t.Fatal("refusing mutation outside the explicitly owned preview PR")
 	}
 	if err = os.MkdirAll(work, 0700); err != nil {
