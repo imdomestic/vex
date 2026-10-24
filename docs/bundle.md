@@ -65,6 +65,6 @@ Action 使用成熟 TOML 和 glob 库。收集路径及父目录必须位于工�
 
 两个仓库保存逐字节相同的 `testdata/vex-build.json`：主仓路径为 `controller/internal/build/testdata/vex-build.json`，独立 Action 路径为 `testdata/vex-build.json`。向量来自真实 example main 提交 `3cf4f9d4009a8a9e46810096e9e9366c8b2e8095` 的 3453 字节 jar，记录其三种实际摘要。
 
-控制器的 `TestActionBundleUsesSameManifestAndActualBytes` 执行独立 Go bundler，收集两个 loader，比较结构及字节，然后使用真实 Git 和 SQLite 完成导入。Action 的 `TestActualProductionJarMatchesSharedVector` 可通过 `VEX_IT_VECTOR_JAR` 指定原始 jar，逐项验证共同向量。
+控制器的 `TestSharedBundleMatchesActionSource` 使用 `VEX_IT_ACTION_SOURCE` 指向独立 `vex-action` 工作目录，逐字节比较两个仓库中的向量。`TestActionBundleUsesSameManifestAndActualBytes` 使用 `VEX_IT_ACTION_GO` 指定从该目录构建的 Go bundler，收集两个 loader，比较结构及字节，然后使用真实 Git 和 SQLite 完成导入。两个变量应同时设置。Action 的 `TestActualProductionJarMatchesSharedVector` 可通过 `VEX_IT_VECTOR_JAR` 指定原始 jar，逐项验证共同向量。Action 源码统一保存在 `imdomestic/vex-action`。
 
 客户端指纹采用 UTF-8 紧凑 JSON，字段顺序固定为 `minecraft`、`loader`、`loaderVersion`、`sha512`。最后一项为全部客户端文件的 SHA512 去重集合，按 ASCII 升序排列；服务端专用文件不进入集合。对该 JSON 字节计算 SHA256，小写十六进制结果写入 `clientFingerprint`。名称、下载地址、文件排列顺序不参与指纹。
