@@ -10,13 +10,16 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/imdomestic/vex/controller/internal/auth"
 	"github.com/imdomestic/vex/controller/internal/build"
+	"github.com/imdomestic/vex/controller/internal/ci"
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/events"
 	"github.com/imdomestic/vex/controller/internal/gitmirror"
 	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/projectstate"
 	"github.com/imdomestic/vex/controller/internal/rooms"
 	"github.com/imdomestic/vex/controller/internal/store"
 )
@@ -27,8 +30,11 @@ type Server struct {
 	DB           *store.Store
 	Git          *gitmirror.Mirror
 	Builds       *build.Manager
+	CI           *ci.Manager
 	Rooms        *rooms.Manager
+	State        *projectstate.State
 	Auth         *auth.Auth
+	Device       *auth.DeviceFlow
 	Events       *events.Bus
 	Projects     map[string]*Server
 	RouterSource func(context.Context, string) (bool, error)
@@ -65,6 +71,9 @@ func (s *Server) Handler() http.Handler {
 				}
 			}
 			identity, err := target.authorize(r, route.Permission)
+			if err == nil && target.Cfg.ID != "" && (route.Method != http.MethodGet || strings.HasSuffix(route.Path, "/pack.mrpack")) {
+				err = target.State.Check()
+			}
 			if err == nil {
 				err = route.handle(target, w, r, identity)
 			}
@@ -90,7 +99,7 @@ func (s *Server) authorize(r *http.Request, permission string) (auth.Identity, e
 		}
 		return identity, model.Failure("unauthorized", "内部来源无效")
 	}
-	if (permission == "download" || permission == "developer-download" || permission == "seed-download" || permission == "pack-download") && s.Auth.ValidDownload(r) {
+	if (permission == "download" || permission == "viewer-download" || permission == "developer-download" || permission == "seed-download" || permission == "pack-download") && s.Auth.ValidDownload(r) {
 		return identity, nil
 	}
 	identity, err := s.Auth.Authenticate(r)
@@ -189,14 +198,16 @@ func writeError(w http.ResponseWriter, err error) {
 	var business *model.Error
 	if errors.As(err, &business) {
 		switch business.Code {
-		case "invalid_request", "invite_invalid":
+		case "invalid_request", "invite_invalid", "expired_token":
 			status = 400
 		case "rate_limited":
 			status = 429
 		case "unauthorized":
 			status = 401
-		case "forbidden":
+		case "forbidden", "access_denied", "account_not_linked":
 			status = 403
+		case "provider_unavailable", "project_initializing":
+			status = 503
 		case "not_found":
 			status = 404
 		default:

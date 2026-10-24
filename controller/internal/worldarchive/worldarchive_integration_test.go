@@ -3,16 +3,15 @@
 package worldarchive
 
 import (
-	"os"
 	"testing"
+
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 )
 
 func TestActualStoppedWorld(t *testing.T) {
-	filename, version := os.Getenv("VEX_IT_WORLD_ARCHIVE"), os.Getenv("VEX_IT_MINECRAFT")
-	if filename == "" || version == "" {
-		t.Skip("requires VEX_IT_WORLD_ARCHIVE and VEX_IT_MINECRAFT from an actual stopped world")
-	}
-	if err := Validate(filename, version); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"world-26.3.tar.gz", "world-26.3-large.tar.gz"} {
+		if err := Validate(testfixture.File(t, name), "26.3"); err != nil {
+			t.Fatal(name, err)
+		}
 	}
 }

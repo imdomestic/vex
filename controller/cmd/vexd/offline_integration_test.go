@@ -23,15 +23,15 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/pelletier/go-toml/v2"
 )
 
 func TestRealDaemonStartsWithUnavailableRemote(t *testing.T) {
 	binary, configPath := os.Getenv("VEX_IT_BINARY"), os.Getenv("VEX_IT_CONFIG")
-	sourceProject, runID := os.Getenv("VEX_IT_PROJECT"), os.Getenv("VEX_IT_RUN_ID")
-	work := os.Getenv("VEX_IT_WORK")
-	if binary == "" || configPath == "" || sourceProject == "" || runID == "" || work == "" {
-		t.Skip("requires actual vexd, project configuration and an isolated run ID")
+	runID, work := os.Getenv("VEX_IT_RUN_ID"), os.Getenv("VEX_IT_WORK")
+	if binary == "" || configPath == "" || runID == "" || work == "" {
+		t.Skip("requires actual vexd, operator configuration and an isolated run ID")
 	}
 	if !filepath.IsAbs(work) || !strings.Contains(filepath.Clean(work), "/.work/") {
 		t.Fatal("offline integration requires an absolute ignored workspace")
@@ -41,10 +41,12 @@ func TestRealDaemonStartsWithUnavailableRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := resolved.Config
-	project, exists := cfg.Projects[sourceProject]
+	// 项目定义由测试建立，不取自运维配置中的任何实际项目。
+	project := testproject.Configure(t, &cfg, "http://127.0.0.1:1/unreachable.git", nil)
+	project.Build, project.GitHub, project.CI = config.ProjectBuild{Source: "host", Timeout: "30m"}, config.ProjectGitHub{}, config.ProjectCI{}
 	projectID := "vex-it-offline-" + runID
-	if !exists || !config.ValidID(projectID) {
-		t.Fatal("source project or integration project ID is invalid")
+	if !config.ValidID(projectID) {
+		t.Fatal("integration project ID is invalid")
 	}
 	if err = os.MkdirAll(work, 0700); err != nil {
 		t.Fatal(err)
@@ -75,6 +77,8 @@ func TestRealDaemonStartsWithUnavailableRemote(t *testing.T) {
 	}
 	cfg.Archive = config.Archive{Backend: "local", Local: config.LocalArchive{Directory: filepath.Join(root, "archive")}}
 	cfg.Auth.SigningKeyFile = filepath.Join(root, "signing.key")
+	// 测试进程使用自己的管理 socket，不触及生产服务的 /run/vex。
+	cfg.Auth.AdminSocket = filepath.Join(root, "admin.sock")
 	secret := make([]byte, 32)
 	if _, err = rand.Read(secret); err != nil {
 		t.Fatal(err)
@@ -192,7 +196,7 @@ func TestRealDaemonStartsWithUnavailableRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, data, err = request("POST", prefix+"/builds", payload)
-	if err != nil || status != 404 {
+	if err != nil || status != 409 {
 		t.Fatalf("missing commit build: status=%d error=%v", status, err)
 	}
 	var response struct {
@@ -201,8 +205,8 @@ func TestRealDaemonStartsWithUnavailableRemote(t *testing.T) {
 	if err = json.Unmarshal(data, &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Error.Code != "not_found" || !strings.Contains(response.Error.Message, "remote refresh") {
-		t.Fatal("build failure does not explain unavailable source")
+	if response.Error.Code != "commit_unavailable" || !strings.Contains(response.Error.Message, "现有历史") {
+		t.Fatal("build failure does not explain the unavailable commit")
 	}
 	for {
 		logs, err := os.ReadFile(logfile.Name())

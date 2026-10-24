@@ -12,7 +12,7 @@ import (
 func journalFixture(t *testing.T) Plan {
 	t.Helper()
 	root := t.TempDir()
-	plan := Plan{Project: "example", SourceDir: filepath.Join(root, "source"), DestinationDB: filepath.Join(root, "destination", "state", "vexd.db"), SourceHashes: map[string]string{}, Counters: map[string]int64{"world_revision:plaza": 3}}
+	plan := Plan{Project: "example", SourceDir: filepath.Join(root, "source"), DestinationDB: filepath.Join(root, "destination", "state", "vexd.db"), SourceHashes: map[string]string{}, Counters: map[string]int64{"world_revision:spawn": 3}}
 	plan.SourceDB = filepath.Join(plan.SourceDir, "legacy.db")
 	for _, pair := range [][2]string{{"assets", "worlds"}, {"packs", "packs"}, {"gradle-home", "cache/gradle"}} {
 		from := filepath.Join(plan.SourceDir, pair[0])
@@ -32,7 +32,7 @@ func journalFixture(t *testing.T) Plan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec("CREATE TABLE records(kind TEXT,id TEXT,data BLOB,PRIMARY KEY(kind,id)); CREATE TABLE counters(name TEXT PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO counters VALUES('asset_revision:plaza',3)"); err != nil {
+	if _, err = db.Exec("CREATE TABLE records(kind TEXT,id TEXT,data BLOB,PRIMARY KEY(kind,id)); CREATE TABLE counters(name TEXT PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO counters VALUES('asset_revision:spawn',3)"); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestResumeRejectsChangedStateWithoutFurtherMoves(t *testing.T) {
 			case "foreign-database":
 				err = os.WriteFile(plan.DestinationDB, []byte("operator-owned-file"), 0600)
 			case "journal":
-				value.Plan.Counters["world_revision:plaza"]++
+				value.Plan.Counters["world_revision:spawn"]++
 				data, marshalErr := json.Marshal(value)
 				if marshalErr != nil {
 					t.Fatal(marshalErr)
@@ -199,7 +199,7 @@ func TestResumeRejectsChangedStateWithoutFurtherMoves(t *testing.T) {
 
 func TestMigrationRejectsPlanChangesAliasesAndReplacement(t *testing.T) {
 	plan := journalFixture(t)
-	plan.Counters["world_revision:plaza"]++
+	plan.Counters["world_revision:spawn"]++
 	if err := Apply(t.Context(), plan); err == nil {
 		t.Fatal("modified plan accepted")
 	}

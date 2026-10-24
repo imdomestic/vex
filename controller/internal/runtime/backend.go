@@ -24,6 +24,8 @@ type RoomSpec struct {
 	RCONPassword     string      `json:"rconPassword"`
 	ResourcePackURL  string      `json:"resourcePackURL"`
 	ResourcePackSHA1 string      `json:"resourcePackSHA1"`
+	Whitelist        []string    `json:"whitelist"`
+	EnforceWhitelist bool        `json:"enforceWhitelist"`
 }
 
 type RoomStatus struct {
@@ -57,6 +59,7 @@ type LogOptions struct {
 
 type ArchiveSpec struct {
 	Room      model.Room
+	Build     model.Build
 	Resource  ResourceRef
 	RoomToken string
 }
@@ -84,6 +87,8 @@ type Backend interface {
 	StopRoom(context.Context, ResourceRef, StopOptions) error
 	ArchiveWorld(context.Context, ArchiveSpec) (ArchiveResult, error)
 	DeleteRoom(context.Context, ResourceRef, DeleteOptions) error
+	// DeleteWorld 按 UID 删除已停止房间的世界卷，返回被删除卷的 UID。
+	DeleteWorld(context.Context, ResourceRef) (string, error)
 	Logs(context.Context, ResourceRef, LogOptions) (string, error)
 	RCON(context.Context, ResourceRef, string) (string, error)
 	Capacity(context.Context) ([]model.Node, error)

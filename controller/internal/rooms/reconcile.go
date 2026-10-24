@@ -227,13 +227,11 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		room.Phase = "building mods"
 		return m.save(ctx, room, rt)
 	}
-	if b.Minecraft == nil || *b.Minecraft != m.Cfg.Minecraft.Version {
-		return m.Fail(ctx, room, rt, "build_mismatch", "构建 Minecraft 版本与服务器配置不一致")
+	if b.Minecraft == nil || *b.Minecraft == "" || b.Java == nil || m.Cfg.Runtimes[fmt.Sprintf("java%d", *b.Java)].ServerImage == "" {
+		return m.Fail(ctx, room, rt, "build_mismatch", "构建缺少 Minecraft 版本或可用 Java 运行环境")
 	}
-	if room.SeedResolved != nil && room.SeedResolved.Kind == "world" {
-		if err = m.worldCompatible(ctx, *room.SeedResolved, b); err != nil {
-			return m.Fail(ctx, room, rt, "build_mismatch", err.Error())
-		}
+	if err = m.compatibleWorld(ctx, room, rt, b); err != nil {
+		return m.Fail(ctx, room, rt, "build_mismatch", err.Error())
 	}
 	if rt.Spec == nil {
 		node, err := m.chooseNode(ctx, room, nodes)
@@ -276,6 +274,9 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 		rt.ProcessNotReadySince = nil
 	}
 	if status.Ready && status.Generation == room.Generation && status.BuildID == room.BuildID {
+		if err = m.restoreRoute(ctx, room, rt); err != nil {
+			return err
+		}
 		if room.State == "ready" && !forceProbe && rt.LastProbe != nil && now.Sub(*rt.LastProbe) < 15*time.Second {
 			return m.save(ctx, room, rt)
 		}
@@ -291,6 +292,10 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 			if err != nil {
 				return err
 			}
+			if room.Kind == "pr" && rt.PendingSHA != "" && rt.PendingSHA != room.SHA && m.Cfg.Policy.OnNewHead == "when_empty" && room.Label == "testing" && rt.Online == 0 && !activeLease {
+				room.State, room.Phase, rt.Restart = "stopping", "updating preview build", true
+				return m.save(ctx, room, rt)
+			}
 			if rt.Online == 0 && !activeLease {
 				if room.IdleSince == nil {
 					room.IdleSince = &now
@@ -300,6 +305,8 @@ func (m *Manager) reconcileRoom(ctx context.Context, room model.Room, nodes []mo
 					idle = m.Cfg.Rooms.BranchIdle
 				} else if room.Kind == "world" {
 					idle = m.Cfg.Rooms.WorldIdle
+				} else if room.Kind == "pr" {
+					idle = m.Cfg.Rooms.PRIdle
 				}
 				if now.Sub(*room.IdleSince) >= config.Duration(idle) {
 					room.State = "stopping"
@@ -343,6 +350,17 @@ func lostRecoveryState(room model.Room, rt Runtime, status runtime.RoomStatus) s
 }
 
 func (m *Manager) chooseNode(ctx context.Context, room model.Room, nodes []model.Node) (string, error) {
+	rt, err := m.runtime(ctx, room.ID)
+	if err != nil {
+		return "", err
+	}
+	retainedNode := ""
+	if rt.WorldExists {
+		if room.Node == nil || *room.Node == "" {
+			return "", model.Failure("conflict", "保留世界缺少原节点记录")
+		}
+		retainedNode = *room.Node
+	}
 	rooms, err := m.List(ctx)
 	if err != nil {
 		return "", err
@@ -379,6 +397,9 @@ func (m *Manager) chooseNode(ctx context.Context, room model.Room, nodes []model
 		return ordered[i].Name < ordered[j].Name
 	})
 	for _, node := range ordered {
+		if retainedNode != "" && node.Name != retainedNode {
+			continue
+		}
 		if node.Ready && node.Schedulable && slices.Contains(node.Roles, role) && len(used[node.Name]) < node.MaxRunning {
 			return node.Name, nil
 		}
@@ -422,7 +443,11 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 			}
 			return nil
 		}
-		if !rt.WorldExists || rt.Spec == nil {
+		if !rt.WorldExists {
+			return m.finishStop(ctx, room, rt, nil)
+		}
+		if rt.Spec == nil && !rt.ArchiveComplete {
+			// 本 generation 仍在排队、尚未获得规格：没有进程运行过，保留世界与上一次归档相同，不生成新快照。
 			return m.finishStop(ctx, room, rt, nil)
 		}
 		now := time.Now().UTC()
@@ -443,7 +468,7 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 		if rt.Spec == nil {
 			return fmt.Errorf("room archive has no generation specification")
 		}
-		archive, archiveErr := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
+		archive, archiveErr := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Build: rt.Spec.Build, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
 		if archiveErr != nil {
 			return archiveErr
 		}
@@ -462,7 +487,7 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 	if rt.Spec == nil {
 		return fmt.Errorf("room archive has no generation specification")
 	}
-	archive, err := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
+	archive, err := m.Backend.ArchiveWorld(ctx, runtime.ArchiveSpec{Room: room, Build: rt.Spec.Build, Resource: rt.Resource, RoomToken: rt.Spec.RoomToken})
 	if err != nil {
 		return err
 	}
@@ -479,17 +504,22 @@ func (m *Manager) reconcileStop(ctx context.Context, room model.Room, rt Runtime
 }
 
 func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, snapshot *model.Snapshot) error {
+	keepWorld := room.Kind == "branch" || room.Kind == "pr" && room.Label == "testing"
 	if snapshot != nil {
 		room.LastSnapshot = &snapshot.CapturedAt
-		if err := m.Backend.DeleteRoom(ctx, rt.Resource, runtime.DeleteOptions{KeepWorld: room.Kind == "branch", Snapshot: snapshot}); err != nil {
+		if err := m.Backend.DeleteRoom(ctx, rt.Resource, runtime.DeleteOptions{KeepWorld: keepWorld, Snapshot: snapshot}); err != nil {
 			return err
 		}
-		if room.Kind != "branch" {
+		if !keepWorld {
 			rt.WorldExists = false
+		}
+		if room.Kind == "pr" {
+			room.Seed = "snapshot:" + snapshot.ID
+			room.SeedResolved = &model.SeedResolved{Kind: "snapshot", ID: snapshot.ID}
 		}
 	}
 	room.State = "closed"
-	if room.Kind == "branch" && room.Label == "testing" {
+	if (room.Kind == "branch" || room.Kind == "pr") && room.Label == "testing" {
 		room.State = "stopped"
 	}
 	room.Phase = room.State
@@ -504,6 +534,9 @@ func (m *Manager) finishStop(ctx context.Context, room model.Room, rt Runtime, s
 	restart := rt.Restart && room.Label == "testing"
 	rt.Restart = restart
 	if err := m.save(ctx, room, rt); err != nil {
+		return err
+	}
+	if err := m.syncHost(ctx, room, rt); err != nil {
 		return err
 	}
 	if restart && room.Label == "testing" {

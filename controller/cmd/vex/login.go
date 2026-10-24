@@ -23,13 +23,14 @@ import (
 func loginCommand(ctx context.Context, global *pflag.FlagSet, args []string, input io.Reader, output io.Writer) error {
 	flags := commandFlags(global, args[0])
 	tokenStdin := flags.Bool("token-stdin", false, "read a service account token from standard input")
+	githubLogin := flags.Bool("github", false, "sign in using GitHub device authorization")
 	ttl := flags.String("ttl", "", "invitation lifetime")
 	clientName := flags.String("client", "", "session device name")
 	if err := parse(flags, args[1:]); err != nil {
 		return err
 	}
 	positionals := flags.Args()
-	if args[0] != "login" && (*tokenStdin || *clientName != "") || args[0] != "auth" && args[0] != "user" && *ttl != "" {
+	if args[0] != "login" && (*tokenStdin || *githubLogin || *clientName != "") || args[0] != "auth" && args[0] != "user" && *ttl != "" {
 		return fmt.Errorf("option does not apply to this login command")
 	}
 	settings := []string{}
@@ -44,9 +45,9 @@ func loginCommand(ctx context.Context, global *pflag.FlagSet, args []string, inp
 	}
 	if args[0] == "login" {
 		if len(positionals) > 1 {
-			return fmt.Errorf("usage: vex login [SERVER-URL|INVITATION-LINK] [--token-stdin]")
+			return fmt.Errorf("usage: vex login [SERVER-URL|INVITATION-LINK] [--token-stdin|--github]")
 		}
-		return login(ctx, global, resolved, positionals, *tokenStdin, *clientName, input, output)
+		return login(ctx, global, resolved, positionals, *tokenStdin, *githubLogin, *clientName, input, output)
 	}
 	if err = selectClient(global, &resolved); err != nil {
 		return err
@@ -126,7 +127,7 @@ func invitationAddress(raw string) (string, string, error) {
 	return server, code, err
 }
 
-func login(ctx context.Context, global *pflag.FlagSet, resolved config.Resolved[config.Client], args []string, tokenStdin bool, clientName string, input io.Reader, output io.Writer) error {
+func login(ctx context.Context, global *pflag.FlagSet, resolved config.Resolved[config.Client], args []string, tokenStdin, githubLogin bool, clientName string, input io.Reader, output io.Writer) error {
 	cfg := resolved.Config
 	server, code := "", ""
 	var err error
@@ -143,6 +144,16 @@ func login(ctx context.Context, global *pflag.FlagSet, resolved config.Resolved[
 	}
 	if tokenStdin && code != "" {
 		return fmt.Errorf("token input cannot be combined with an invitation")
+	}
+	if githubLogin && (tokenStdin || code != "") {
+		return fmt.Errorf("GitHub login cannot be combined with token input or an invitation")
+	}
+	if clientName == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return err
+		}
+		clientName = "vex on " + hostname
 	}
 	publicConfig := cfg
 	publicConfig.URL, publicConfig.TokenFile, publicConfig.Path = server, "", ""
@@ -171,6 +182,19 @@ func login(ctx context.Context, global *pflag.FlagSet, resolved config.Resolved[
 		if err = c.get(ctx, "/v2/me", &user); err != nil {
 			return err
 		}
+	} else if githubLogin {
+		available := false
+		for _, method := range meta.Auth.Methods {
+			available = available || method == "github"
+		}
+		if !available {
+			return fmt.Errorf("server does not offer GitHub login")
+		}
+		result, err := c.githubLogin(ctx, clientName, output)
+		if err != nil {
+			return err
+		}
+		c.token, user, issued = result.Token, result.User, true
 	} else {
 		available := false
 		for _, method := range meta.Auth.Methods {
@@ -188,13 +212,6 @@ func login(ctx context.Context, global *pflag.FlagSet, resolved config.Resolved[
 				return fmt.Errorf("cannot read invitation code")
 			}
 			code = strings.TrimSpace(code)
-		}
-		if clientName == "" {
-			hostname, err := os.Hostname()
-			if err != nil {
-				return err
-			}
-			clientName = "vex on " + hostname
 		}
 		response, err := c.do(ctx, requestPlan{Method: http.MethodPost, Path: "/v2/auth/invites/redeem", Body: map[string]string{"code": code, "client": clientName}})
 		if err != nil {

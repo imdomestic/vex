@@ -18,6 +18,7 @@ import (
 
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/filehash"
+	"github.com/imdomestic/vex/controller/internal/manifest"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
@@ -89,12 +90,16 @@ func writeMetadata(destination string, value any) (string, int64, error) {
 func writeRevisionMetadata(destination string, revision model.WorldRevision) (string, int64, error) {
 	value := struct {
 		model.WorldMetadata
-		Project    string          `json:"project"`
-		Rev        string          `json:"rev"`
-		SnapshotID *string         `json:"snapshotId"`
-		World      model.WorldFile `json:"world"`
-		CreatedAt  time.Time       `json:"createdAt"`
-	}{revision.WorldMetadata, revision.Project, revision.Rev, revision.SnapshotID, revision.World, revision.CreatedAt}
+		Project          string             `json:"project"`
+		Rev              string             `json:"rev"`
+		SnapshotID       *string            `json:"snapshotId"`
+		World            model.WorldFile    `json:"world"`
+		CreatedAt        time.Time          `json:"createdAt"`
+		ManifestSHA      string             `json:"manifestSha"`
+		ExtraRootEntries []string           `json:"extraRootEntries"`
+		Commit           *model.CommitInfo  `json:"commit"`
+		Manifest         *manifest.Document `json:"manifest"`
+	}{revision.WorldMetadata, revision.Project, revision.Rev, revision.SnapshotID, revision.World, revision.CreatedAt, revision.ManifestSHA, revision.ExtraRootEntries, revision.Commit, revision.Manifest}
 	return writeMetadata(destination, value)
 }
 
@@ -160,20 +165,23 @@ func (m *Manager) queueRevision(ctx context.Context, tx *store.Tx, value model.W
 	return nil
 }
 
-func (m *Manager) Publish(ctx context.Context, metadata model.WorldMetadata, source string) (model.WorldRevision, bool, error) {
-	return m.publish(ctx, metadata, source, nil, metadata.Requires.Namespaces != nil)
+func (m *Manager) Publish(ctx context.Context, metadata model.WorldMetadata, source string, policy ManifestPolicy) (model.WorldRevision, bool, error) {
+	return m.publish(ctx, metadata, source, nil, metadata.Requires.Namespaces != nil, policy)
 }
 
-func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, source string, snapshotID *string, declaredNamespaces bool) (model.WorldRevision, bool, error) {
+func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, source string, snapshotID *string, declaredNamespaces bool, policy ManifestPolicy) (model.WorldRevision, bool, error) {
 	var result model.WorldRevision
-	metadata, err := m.metadata(metadata)
+	if err := policy.Validate(); err != nil {
+		return result, false, err
+	}
+	metadata, err := m.metadata(metadata, policy)
 	if err != nil {
 		return result, false, err
 	}
 	if err = worldarchive.Space(m.cfg.DataDir); err != nil {
 		return result, false, err
 	}
-	if err = worldarchive.Validate(source, metadata.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err = worldarchive.Validate(source, metadata.Minecraft, policy.Document.World.ExtraRootEntries...); err != nil {
 		return result, false, model.Failure("invalid_request", err.Error())
 	}
 	namespaces, err := m.scan(ctx, source, metadata.Minecraft)
@@ -204,6 +212,9 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 				return err
 			}
 			if result.World.SHA256 == digest {
+				if err = revisionPolicyRecorded(result); err != nil {
+					return err
+				}
 				valid, err := intact(m.absolute(result.World.Path), digest, size)
 				if err != nil {
 					return err
@@ -244,6 +255,9 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 		}
 		revision := strconv.Itoa(number)
 		result = model.WorldRevision{Project: m.cfg.ID, WorldMetadata: metadata, Rev: revision, SnapshotID: snapshotID, World: model.WorldFile{SHA256: digest, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Path: WorldPath(metadata.ID, revision), Size: size, URL: downloadURL(m.cfg.ID, metadata.ID, revision)}, CreatedAt: time.Now().UTC()}
+		result.ManifestSHA, result.ExtraRootEntries = policy.SHA, append([]string{}, policy.Document.World.ExtraRootEntries...)
+		document := policy.Document
+		result.Commit, result.Manifest = policy.Commit, &document
 		if err = copyImmutable(source, m.absolute(WorldPath(metadata.ID, revision)), digest, size); err != nil {
 			return err
 		}
@@ -266,7 +280,8 @@ func (m *Manager) publish(ctx context.Context, metadata model.WorldMetadata, sou
 	return result, created, err
 }
 
-func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.WorldRevision, bool, error) {
+// Promote 只读取快照记录。世界房间的快照为原世界新增 revision；其他房间的快照创建一个新世界。
+func (m *Manager) Promote(ctx context.Context, id, snapshotID, title string) (model.WorldRevision, bool, error) {
 	var result model.WorldRevision
 	if !config.ValidID(id) {
 		return result, false, model.Failure("invalid_request", "world ID is invalid")
@@ -275,15 +290,59 @@ func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.Wor
 	if err := m.db.Get(ctx, "snapshot", snapshotID, &snapshot); err != nil {
 		return result, false, missing(err)
 	}
-	if snapshot.World == nil || snapshot.World.ID != id {
-		return result, false, model.Failure("invalid_request", "snapshot was not captured from this world")
+	if snapshot.Project != m.cfg.ID {
+		return result, false, model.Failure("not_found", "published object does not exist")
+	}
+	policy, err := snapshotPolicy(snapshot)
+	if err != nil {
+		return result, false, err
+	}
+	if err = policy.Validate(); err != nil {
+		return result, false, err
+	}
+	if !policy.MatchesSnapshot(snapshot) {
+		return result, false, model.Failure("build_mismatch", "snapshot world policy differs from its recorded manifest")
 	}
 	if !snapshot.LocalAvailable {
 		return result, false, model.Failure("archive_failed", "snapshot requires restoration")
 	}
-	origin, err := m.Revision(ctx, id, snapshot.World.Rev)
-	if err != nil {
-		return result, false, err
+	var metadata model.WorldMetadata
+	if snapshot.World != nil {
+		if snapshot.World.ID != id {
+			return result, false, model.Failure("invalid_request", "snapshot was not captured from this world")
+		}
+		if title != "" {
+			return result, false, model.Failure("invalid_request", "title applies only when a room snapshot creates a new world")
+		}
+		origin, err := m.Revision(ctx, id, snapshot.World.Rev)
+		if err != nil {
+			return result, false, err
+		}
+		metadata = origin.WorldMetadata
+	} else {
+		world, err := m.Get(ctx, id)
+		if err == nil {
+			latest, err := m.Revision(ctx, id, world.LatestRev)
+			if err != nil {
+				return result, false, err
+			}
+			if latest.SnapshotID != nil && *latest.SnapshotID == snapshotID {
+				return latest, false, nil
+			}
+			return result, false, model.Failure("conflict", "world already exists; only a snapshot captured from this world can add a revision")
+		}
+		var failure *model.Error
+		if !errors.As(err, &failure) || failure.Code != "not_found" {
+			return result, false, err
+		}
+		loader, ok := strings.CutSuffix(snapshot.BuildID, "-"+snapshot.ManifestSHA[:12])
+		if !ok || loader == "" {
+			return result, false, fmt.Errorf("snapshot build ID differs from its recorded commit")
+		}
+		if title == "" {
+			title = id
+		}
+		metadata = model.WorldMetadata{ID: id, Title: title, Minecraft: snapshot.Minecraft, Requires: model.Requirements{Loaders: []string{loader}, Mods: []string{}}, Source: model.Source{Scale: 1}}
 	}
 	if !filepath.IsLocal(snapshot.Path) {
 		return result, false, fmt.Errorf("invalid recorded snapshot path")
@@ -296,7 +355,7 @@ func (m *Manager) Promote(ctx context.Context, id, snapshotID string) (model.Wor
 	if !valid {
 		return result, false, model.Failure("archive_failed", "snapshot checksum differs from its published metadata")
 	}
-	return m.publish(ctx, origin.WorldMetadata, source, &snapshotID, false)
+	return m.publish(ctx, metadata, source, &snapshotID, false, policy)
 }
 
 func validatePack(filename string) error {

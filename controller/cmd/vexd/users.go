@@ -16,6 +16,9 @@ import (
 )
 
 func userCommand(ctx context.Context, args []string, output io.Writer) error {
+	if len(args) > 0 && args[0] == "github-id" {
+		return githubIdentityCommand(ctx, args[1:], output)
+	}
 	if len(args) < 2 || args[0] != "invite" && args[0] != "sessions" {
 		return fmt.Errorf("usage: vexd user invite NAME [--ttl DURATION] | sessions NAME [--revoke ID]")
 	}

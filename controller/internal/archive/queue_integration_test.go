@@ -12,6 +12,7 @@ import (
 
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 )
 
@@ -26,9 +27,8 @@ func TestRealLocalQueueContinuesAndRetriesIndependently(t *testing.T) {
 func realArchiveQueue(t *testing.T, remote bool) {
 	t.Helper()
 	tank, identity, knownHosts := os.Getenv("VEX_IT_TANK"), os.Getenv("VEX_IT_IDENTITY"), os.Getenv("VEX_IT_KNOWN_HOSTS")
-	world := os.Getenv("VEX_IT_WORLD")
-	if world == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
-		t.Skip("requires a real world and credentials for the selected archive backend")
+	if remote && (tank == "" || identity == "" || knownHosts == "") {
+		t.Skip("requires credentials for the selected archive backend")
 	}
 	if remote {
 		_, remoteRoot, err := target(tank)
@@ -36,15 +36,10 @@ func realArchiveQueue(t *testing.T, remote bool) {
 			t.Fatal("isolated Vex tank test directory required", err)
 		}
 	}
-	source, err := filepath.EvalSymlinks(filepath.Join(world, "level.dat"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.HasPrefix(source, "/home/linwhite/d2-assets/sensitive/") {
-		t.Fatal("sensitive source is forbidden")
-	}
 	root := t.TempDir()
-	if err = os.MkdirAll(filepath.Join(root, ".work"), 0700); err != nil {
+	world := testfixture.WorldDirectory(t, "world-26.3.tar.gz", filepath.Join(root, "fixture"))
+	source := filepath.Join(world, "level.dat")
+	if err := os.MkdirAll(filepath.Join(root, ".work"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(root, "queue.db")

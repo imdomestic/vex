@@ -20,6 +20,7 @@ import (
 )
 
 var buildIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*-[0-9a-f]{12}$`)
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Manager struct {
@@ -46,19 +47,39 @@ func New(cfg config.ProjectConfig, db *store.Store, mirror *gitmirror.Mirror) (*
 
 func (m *Manager) Request(ctx context.Context, sha, loader string, force bool) (model.Build, bool, error) {
 	var result model.Build
-	if m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host" {
+	if m.cfg.Build.Source == "ci" && force {
+		return result, false, model.Failure("conflict", "rerun the configured workflow in GitHub to rebuild a CI project")
+	}
+	if m.cfg.Build.Source != "ci" && (m.cfg.Trust != "trusted" || m.cfg.Build.Source != "host") {
 		return result, false, model.Failure("sandbox_unavailable", "host builds require a trusted project")
 	}
 	selected, ok := m.cfg.Loaders[loader]
 	if !ok || !selected.Enabled {
 		return result, false, model.Failure("invalid_request", "loader is disabled")
 	}
-	if err := m.mirror.VerifyCommit(ctx, sha); err != nil {
-		return result, false, err
+	if !commitPattern.MatchString(sha) {
+		return result, false, model.Failure("invalid_request", "commit sha must contain 40 lowercase hexadecimal characters")
 	}
 	id := loader + "-" + sha[:12]
+	// 已有记录可以直接使用时不读取 Git；只有新的构建尝试要求提交仍在仓库的现有历史中。
+	var existing model.Build
+	err := m.db.Get(ctx, "build", id, &existing)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return result, false, err
+	}
+	var commit *model.CommitInfo
+	if err != nil || existing.SHA == sha && existing.Status != "queued" && existing.Status != "building" && force {
+		if err = m.mirror.VerifyCommit(ctx, sha); err != nil {
+			return result, false, err
+		}
+		info, err := m.mirror.CommitInfo(ctx, sha)
+		if err != nil {
+			return result, false, err
+		}
+		commit = &info
+	}
 	created := false
-	err := m.db.Update(ctx, func(tx *store.Tx) error {
+	err = m.db.Update(ctx, func(tx *store.Tx) error {
 		err := tx.Get(ctx, "build", id, &result)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
@@ -85,14 +106,17 @@ func (m *Manager) Request(ctx context.Context, sha, loader string, force bool) (
 				}
 			}
 		}
+		if commit == nil {
+			return model.Failure("conflict", "build record changed while it was requested; retry the request")
+		}
 		attempt, err := tx.Next(ctx, "build_attempt:"+id)
 		if err != nil {
 			return err
 		}
 		result = model.Build{
-			Project: m.cfg.ID, Source: model.BuildSource{Kind: "host"}, ID: id, SHA: sha, Loader: loader, Status: "queued", Attempt: attempt,
+			Project: m.cfg.ID, Source: model.BuildSource{Kind: m.cfg.Build.Source}, ID: id, SHA: sha, Loader: loader, Status: "queued", Attempt: attempt,
 			QueuedAt: time.Now().UTC(), ModIDs: []string{}, Files: []model.BuildFile{},
-			Log: m.apiPrefix() + "/builds/" + id + "/log",
+			Log: m.apiPrefix() + "/builds/" + id + "/log", Commit: commit,
 		}
 		if err = os.MkdirAll(m.attemptDir(result), 0750); err != nil {
 			return err
@@ -248,6 +272,9 @@ func (m *Manager) step(ctx context.Context) error {
 	}
 	for i := len(values) - 1; i >= 0; i-- {
 		value := values[i]
+		if value.Source.Kind == "ci" {
+			continue
+		}
 		if value.Status != "queued" && value.Status != "building" {
 			continue
 		}

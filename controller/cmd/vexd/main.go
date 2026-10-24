@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"os/user"
@@ -19,18 +21,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/imdomestic/vex/controller/internal/api"
 	"github.com/imdomestic/vex/controller/internal/archive"
 	"github.com/imdomestic/vex/controller/internal/auth"
 	"github.com/imdomestic/vex/controller/internal/build"
+	"github.com/imdomestic/vex/controller/internal/ci"
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/events"
+	"github.com/imdomestic/vex/controller/internal/githubapp"
 	"github.com/imdomestic/vex/controller/internal/gitmirror"
+	"github.com/imdomestic/vex/controller/internal/model"
+	"github.com/imdomestic/vex/controller/internal/projectstate"
 	"github.com/imdomestic/vex/controller/internal/rooms"
 	"github.com/imdomestic/vex/controller/internal/runtime/kubernetes"
 	"github.com/imdomestic/vex/controller/internal/slp"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/supervisor"
+	"github.com/imdomestic/vex/controller/internal/transport"
+	"github.com/imdomestic/vex/controller/internal/wake"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
@@ -104,6 +113,9 @@ func run() error {
 	if command == "user" {
 		return userCommand(ctx, args, os.Stdout)
 	}
+	if command == "github" {
+		return githubCommand(ctx, args, os.Stdout)
+	}
 	if command != "serve" {
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -129,6 +141,13 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 	if err != nil {
 		return err
 	}
+	var githubApp *githubapp.App
+	if cfg.GitHub.App.AppID > 0 {
+		githubApp, err = githubapp.New(cfg.GitHub.App)
+		if err != nil {
+			return err
+		}
+	}
 	projectIDs := make([]string, 0, len(cfg.Projects))
 	for id := range cfg.Projects {
 		projectIDs = append(projectIDs, id)
@@ -146,6 +165,7 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 		return err
 	}
 	var routerSource func(context.Context, string) (bool, error)
+	roomSources := []func(context.Context, string) (bool, error){}
 	for _, id := range projectIDs {
 		project, err := cfg.ForProject(id)
 		if err != nil {
@@ -172,6 +192,7 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			return err
 		}
 		routerSource = backend.RouterSource
+		roomSources = append(roomSources, backend.RoomSource)
 		manager := rooms.New(project, scoped, mirror, builder, backend, backend, authenticator, bus)
 		if err = manager.InitializeRecords(ctx); err != nil {
 			return err
@@ -185,7 +206,15 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			return err
 		}
 		manager.Archive, manager.Worlds, archiver.Worlds = archiver, worldManager, worldManager
-		projects[id] = &api.Server{Cfg: project, DB: scoped, Git: mirror, Builds: builder, Rooms: manager}
+		state := projectstate.New(builder, manager, mirror)
+		projects[id] = &api.Server{Cfg: project, DB: scoped, Git: mirror, Builds: builder, Rooms: manager, State: state}
+		loops = append(loops, loop{id + "/initialize", state.Run})
+		firstLoop := len(loops)
+		if project.Build.Source == "ci" {
+			ciManager := ci.New(project, scoped, githubApp, builder, mirror, manager, authenticator, bus)
+			projects[id].CI = ciManager
+			loops = append(loops, loop{id + "/ci", ciManager.Run})
+		}
 		loops = append(loops, loop{id + "/builder", builder.Run}, loop{id + "/rooms", func(ctx context.Context) error {
 			if err := backend.EnsureProject(ctx); err != nil {
 				return err
@@ -194,12 +223,93 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 		}}, loop{id + "/archive", archiver.Run}, loop{id + "/git", func(ctx context.Context) error {
 			return refreshGit(ctx, manager, config.Duration(project.Git.PollInterval))
 		}})
+		for index := firstLoop; index < len(loops); index++ {
+			loops[index].run = state.After(loops[index].run)
+		}
 	}
 	service := api.New(cfg, projects, authenticator, bus)
+	if cfg.Auth.Providers["github"].Type == "github" {
+		service.Device, err = auth.NewDeviceFlow(ctx, authenticator, cfg.GitHub.App.ClientID)
+		if err != nil {
+			return err
+		}
+	}
 	service.RouterSource = routerSource
-	errorsChannel := make(chan error, len(cfg.Server.Listen)+1)
+	internalChecks := append([]func(context.Context, string) (bool, error){}, roomSources...)
+	if routerSource != nil {
+		internalChecks = append(internalChecks, routerSource)
+	}
+	internalSource := func(ctx context.Context, source string) (bool, error) {
+		return allowedInternalSource(ctx, source, internalChecks)
+	}
+	var tlsConfig *tls.Config
+	var reload <-chan os.Signal
+	certificateFiles := transport.CertificateFiles{Certificate: cfg.Server.TLSCertFile, Key: cfg.Server.TLSKeyFile}
+	if cfg.Server.TLSCertFile != "" {
+		tlsConfig, err = certificateFiles.Config()
+		if err != nil {
+			return err
+		}
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGHUP)
+		defer signal.Stop(signals)
+		reload = signals
+	}
+	endpoints := cfg.Server.Endpoints()
+	errorsChannel := make(chan error, len(endpoints)+2)
 	servers := []*http.Server{}
 	listeners := []net.Listener{}
+	if cfg.Wake.Enabled {
+		lookup := func(ctx context.Context, project, room string) (model.Room, error) {
+			server := projects[project]
+			if server == nil {
+				return model.Room{}, model.Failure("not_found", "项目不存在")
+			}
+			return server.Rooms.Get(ctx, room)
+		}
+		authorize := func(ctx context.Context, project, room, name string, player uuid.UUID) error {
+			server := projects[project]
+			if server == nil {
+				return model.Failure("not_found", "项目不存在")
+			}
+			if err := server.State.Check(); err != nil {
+				return err
+			}
+			return server.Rooms.WakeAuthorize(ctx, room, name, player)
+		}
+		start := func(ctx context.Context, project, room, name string, player uuid.UUID) error {
+			server := projects[project]
+			if server == nil {
+				return model.Failure("not_found", "项目不存在")
+			}
+			if err := server.State.Check(); err != nil {
+				return err
+			}
+			return server.Rooms.WakeStart(ctx, room, name, player)
+		}
+		responder, err := wake.New(wake.Options{
+			Listen: cfg.Wake.Listen, Zone: cfg.Server.Zone, RateLimit: config.Duration(cfg.Wake.RateLimit),
+			SourceAllowed: func(ctx context.Context, address netip.Addr) (bool, error) {
+				if routerSource == nil {
+					return false, fmt.Errorf("wake requires a configured router source verifier")
+				}
+				return routerSource(ctx, address.String())
+			},
+		}, lookup, authorize, start)
+		if err != nil {
+			return err
+		}
+		listener, err := net.Listen("tcp", cfg.Wake.Listen)
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		go func() {
+			if err := responder.Serve(ctx, listener); err != nil && ctx.Err() == nil {
+				errorsChannel <- err
+			}
+		}()
+	}
 	group, err := user.LookupGroup("vex-admin")
 	if err != nil {
 		return fmt.Errorf("admin socket requires the vex-admin group")
@@ -221,8 +331,8 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			errorsChannel <- err
 		}
 	}()
-	for _, address := range cfg.Server.Listen {
-		listener, err := net.Listen("tcp", address)
+	for _, endpoint := range endpoints {
+		listener, err := net.Listen("tcp", endpoint.Address)
 		if err != nil {
 			for _, open := range listeners {
 				open.Close()
@@ -230,23 +340,43 @@ func serve(ctx context.Context, cancel context.CancelFunc, cfg config.Config) er
 			return err
 		}
 		listeners = append(listeners, listener)
-		httpServer := newHTTPServer(ctx, service.Handler())
+		handler := service.Handler()
+		if endpoint.Scope == "internal" {
+			handler = service.InternalHandler(internalSource)
+		}
+		httpServer := newHTTPServer(ctx, handler)
+		if endpoint.TLS {
+			httpServer.TLSConfig = tlsConfig.Clone()
+		}
 		servers = append(servers, httpServer)
 		go func() {
-			err := httpServer.Serve(listener)
+			var err error
+			if endpoint.TLS {
+				err = httpServer.ServeTLS(listener, "", "")
+			} else {
+				err = httpServer.Serve(listener)
+			}
 			if !errors.Is(err, http.ErrServerClosed) {
 				errorsChannel <- err
 			}
 		}()
-		slog.Info("vexd listening", "address", address)
+		slog.Info("vexd listening", "address", endpoint.Address, "tls", endpoint.TLS, "scope", endpoint.Scope)
 	}
 	for _, operation := range loops {
 		go supervisor.Run(ctx, operation.name, operation.run)
 	}
 	var runErr error
-	select {
-	case <-ctx.Done():
-	case runErr = <-errorsChannel:
+	for ctx.Err() == nil && runErr == nil {
+		select {
+		case <-ctx.Done():
+		case runErr = <-errorsChannel:
+		case <-reload:
+			if _, err := certificateFiles.Load(); err != nil {
+				slog.Error("TLS certificate reload failed", "error", err)
+			} else {
+				slog.Info("TLS certificate reloaded")
+			}
+		}
 	}
 	cancel()
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)

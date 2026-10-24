@@ -30,7 +30,8 @@ func Probe(ctx context.Context, address, host string, port int) (Status, error) 
 	var result Status
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return result, err
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/slp"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -102,9 +103,9 @@ func verifySeedInitDigests(t *testing.T, h *lifecycleHarness, roomID string, exp
 
 func realPackCLI(t *testing.T, h *lifecycleHarness) {
 	t.Helper()
-	binary, versionFile := os.Getenv("VEX_IT_CLI"), os.Getenv("VEX_IT_GAME_VERSION")
-	if binary == "" || versionFile == "" {
-		t.Fatal("pack CLI verification requires the compiled Vex CLI and official Minecraft version metadata")
+	binary, versionFile := os.Getenv("VEX_IT_CLI"), testfixture.File(t, "minecraft-26.3-version.json")
+	if binary == "" {
+		t.Fatal("pack CLI verification requires the compiled Vex CLI")
 	}
 	data, err := os.ReadFile(versionFile)
 	if err != nil {

@@ -16,14 +16,11 @@ import (
 	"github.com/imdomestic/vex/controller/internal/filehash"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
 )
 
 func TestRealWorldMigrationPreservesFilesCountersAndSeed(t *testing.T) {
-	archive := os.Getenv("VEX_IT_MIGRATION_WORLD")
-	version := os.Getenv("VEX_IT_MIGRATION_VERSION")
-	if archive == "" || version == "" {
-		t.Skip("requires recorded Minecraft archive VEX_IT_MIGRATION_WORLD and VEX_IT_MIGRATION_VERSION")
-	}
+	archive, version := testfixture.File(t, "world-26.3.tar.gz"), "26.3"
 	for _, scenario := range []string{"apply", "source-changed", "resume-moved-world"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
@@ -78,10 +75,10 @@ func TestRealWorldMigrationPreservesFilesCountersAndSeed(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err = db.Exec("INSERT INTO counters(name,value) VALUES('asset_revision:plaza',3)"); err != nil {
+			if _, err = db.Exec("INSERT INTO counters(name,value) VALUES('asset_revision:fixture',3)"); err != nil {
 				t.Fatal(err)
 			}
-			options := Options{FromDB: database, FromDir: from, ToDir: to, Project: "chorus", Zone: "vex.internal"}
+			options := Options{FromDB: database, FromDir: from, ToDir: to, Project: "legacy", Zone: "vex.internal"}
 			plan, err := Prepare(t.Context(), options)
 			if err != nil {
 				t.Fatal(err)
@@ -121,25 +118,25 @@ func TestRealWorldMigrationPreservesFilesCountersAndSeed(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer migrated.Close()
-			project, err := migrated.WithProject("chorus")
+			project, err := migrated.WithProject("legacy")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err = project.Get(t.Context(), "room", room.ID, &room); err != nil {
 				t.Fatal(err)
 			}
-			if room.Seed != "snapshot:main-fabric-g9" || room.Host != "main-fabric--chorus.vex.internal" || room.Generation != 9 || room.Project != "chorus" || room.State != "stopped" {
+			if room.Seed != "snapshot:main-fabric-g9" || room.Host != "main-fabric--legacy.vex.internal" || room.Generation != 9 || room.Project != "legacy" || room.State != "stopped" {
 				t.Fatal("main seed or identity was not preserved")
 			}
 			if err = project.Get(t.Context(), "snapshot", snapshot.ID, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			result, err := filehash.File(filepath.Join(to, "projects", "chorus", snapshot.Path))
+			result, err := filehash.File(filepath.Join(to, "projects", "legacy", snapshot.Path))
 			if err != nil || result != hashes || snapshot.SHA1 != hashes.SHA1 || snapshot.SHA512 != hashes.SHA512 || snapshot.TankVerifiedAt == nil {
 				t.Fatal("snapshot content or verification changed", err)
 			}
 			if err = project.Update(t.Context(), func(tx *store.Tx) error {
-				next, err := tx.Next(t.Context(), "world_revision:plaza")
+				next, err := tx.Next(t.Context(), "world_revision:fixture")
 				if next != 4 {
 					t.Errorf("revision counter was not preserved: %d", next)
 				}

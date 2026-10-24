@@ -59,14 +59,21 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported Minecraft loader")
 	}
-	if spec.Room.Kind != "branch" && spec.Room.Kind != "commit" && spec.Room.Kind != "world" {
+	if spec.Room.Kind != "branch" && spec.Room.Kind != "commit" && spec.Room.Kind != "world" && spec.Room.Kind != "pr" {
 		return nil, nil, nil, fmt.Errorf("invalid room kind")
+	}
+	if !spec.EnforceWhitelist && (spec.Room.Kind != "pr" || spec.Room.PreviewAccess != "public") {
+		return nil, nil, nil, fmt.Errorf("only a public PR room may disable its whitelist")
 	}
 	if !c.nodeAllows(spec.Node, spec.Room.Kind) {
 		return nil, nil, nil, fmt.Errorf("room node does not allow this room role")
 	}
-	if *spec.Build.Minecraft != c.cfg.Minecraft.Version || spec.Build.Java == nil || *spec.Build.Java != c.cfg.Minecraft.Java {
-		return nil, nil, nil, fmt.Errorf("build Minecraft or Java runtime differs from project")
+	if spec.Build.Java == nil || *spec.Build.Java <= 0 {
+		return nil, nil, nil, fmt.Errorf("build Java runtime is missing")
+	}
+	javaRuntime, exists := c.cfg.Runtimes[fmt.Sprintf("java%d", *spec.Build.Java)]
+	if !exists || javaRuntime.ServerImage == "" {
+		return nil, nil, nil, fmt.Errorf("build requires an unconfigured Java server runtime")
 	}
 	if spec.RCONPassword == "" || spec.RoomToken == "" {
 		return nil, nil, nil, fmt.Errorf("room credentials are required")
@@ -102,13 +109,17 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 	if spec.ResourcePackURL != "" && (!validDownload(spec.ResourcePackURL) || len(spec.ResourcePackSHA1) != 40) {
 		return nil, nil, nil, fmt.Errorf("resource pack requires URL and SHA-1")
 	}
-	heap := strings.TrimSuffix(strings.TrimSuffix(c.cfg.Rooms.Heap, "G"), "M")
-	if strings.HasSuffix(c.cfg.Rooms.Heap, "G") {
+	heapValue := spec.Build.RoomMemory
+	if heapValue == "" {
+		heapValue = c.cfg.Rooms.Heap
+	}
+	heap := strings.TrimSuffix(strings.TrimSuffix(heapValue, "G"), "M")
+	if strings.HasSuffix(heapValue, "G") {
 		heap += "Gi"
-	} else if strings.HasSuffix(c.cfg.Rooms.Heap, "M") {
+	} else if strings.HasSuffix(heapValue, "M") {
 		heap += "Mi"
 	} else {
-		heap = c.cfg.Rooms.Heap
+		heap = heapValue
 	}
 	request, err := resource.ParseQuantity(heap)
 	if err != nil {
@@ -140,9 +151,9 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 		{Name: "VERSION", Value: *spec.Build.Minecraft}, {Name: loaderVariable, Value: *spec.Build.LoaderVersion},
 		{Name: "FABRIC_LAUNCHER_VERSION", Value: "1.1.2"}, {Name: "UID", Value: "1000"}, {Name: "GID", Value: "1000"},
 		{Name: "MODS", Value: "/vex-mods"}, {Name: "REMOVE_OLD_MODS", Value: "TRUE"},
-		{Name: "ONLINE_MODE", Value: "TRUE"}, {Name: "ENABLE_WHITELIST", Value: "TRUE"}, {Name: "ENFORCE_WHITELIST", Value: "TRUE"},
-		{Name: "WHITELIST", Value: strings.Join(c.cfg.Minecraft.Whitelist, ",")},
-		{Name: "MEMORY", Value: c.cfg.Rooms.Heap}, {Name: "ACCEPTS_TRANSFERS", Value: "TRUE"},
+		{Name: "ONLINE_MODE", Value: "TRUE"}, {Name: "ENABLE_WHITELIST", Value: strconv.FormatBool(spec.EnforceWhitelist)}, {Name: "ENFORCE_WHITELIST", Value: strconv.FormatBool(spec.EnforceWhitelist)},
+		{Name: "WHITELIST", Value: strings.Join(spec.Whitelist, ",")},
+		{Name: "MEMORY", Value: heapValue}, {Name: "ACCEPTS_TRANSFERS", Value: "TRUE"},
 		{Name: "ENABLE_RCON", Value: "TRUE"}, secretEnv("RCON_PASSWORD", secret.Name, "rcon-password"),
 		{Name: "MOTD", Value: fmt.Sprintf("§7vex §f%s\n§8project=%s room=%s build=%s generation=%d", spec.Room.ID, c.cfg.ID, spec.Room.ID, spec.Room.BuildID, spec.Room.Generation)},
 		{Name: "LEVEL", Value: "world"}, {Name: "STOP_DURATION", Value: "60"},
@@ -169,13 +180,13 @@ func (c *Client) objects(spec RoomSpec) (*corev1.Service, *corev1.Secret, *appsv
 				NodeSelector: map[string]string{"kubernetes.io/hostname": spec.Node},
 				Tolerations:  roomTolerations(),
 				Volumes:      []corev1.Volume{{Name: "server-mods", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("1Gi")}}}},
-				InitContainers: []corev1.Container{{Name: "seed-world", Image: c.cfg.Minecraft.Image,
+				InitContainers: []corev1.Container{{Name: "seed-world", Image: javaRuntime.ServerImage,
 					Command:      []string{"/bin/bash", "-euo", "pipefail", "-c", seedScript},
 					Env:          []corev1.EnvVar{{Name: "SEED_URL", Value: spec.SeedURL}, {Name: "SEED_SHA256", Value: spec.SeedSHA256}, {Name: "TMPDIR", Value: "/data/.work"}, {Name: "SERVER_MODS", Value: string(modJSON)}},
 					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}, {Name: "server-mods", MountPath: "/vex-mods"}},
 					Resources:    corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}, Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}},
 				}},
-				Containers: []corev1.Container{{Name: "mc", Image: c.cfg.Minecraft.Image, Env: env,
+				Containers: []corev1.Container{{Name: "mc", Image: javaRuntime.ServerImage, Env: env,
 					Ports:          []corev1.ContainerPort{{Name: "minecraft", ContainerPort: 25565}},
 					Resources:      corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: request}, Limits: corev1.ResourceList{corev1.ResourceMemory: limit}},
 					StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"mc-health"}}}, PeriodSeconds: 5, FailureThreshold: 60},

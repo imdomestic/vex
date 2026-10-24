@@ -77,7 +77,7 @@ func publicationCommand(ctx context.Context, global *pflag.FlagSet, args []strin
 		return plan, resolved, nil
 	}
 	if len(positionals) != 2 {
-		return plan, resolved, fmt.Errorf("usage: world publish PATH --world ID [--title TITLE] [--pack ID@REV] | world show|archive|restore ID | world promote SNAPSHOT; pack publish ZIP --pack ID")
+		return plan, resolved, fmt.Errorf("usage: world publish PATH --world ID [--title TITLE] [--pack ID@REV] | world show|archive|restore ID | world promote SNAPSHOT [--world ID] [--title TITLE]; pack publish ZIP --pack ID")
 	}
 	action, input := positionals[0], positionals[1]
 	if args[0] == "pack" {
@@ -109,11 +109,22 @@ func publicationCommand(ctx context.Context, global *pflag.FlagSet, args []strin
 		if err = c.get(ctx, prefix+"/snapshots/"+url.PathEscape(input), &snapshot); err != nil {
 			return plan, resolved, err
 		}
-		if snapshot.Project != resolved.Config.Project || snapshot.World == nil || !config.ValidID(snapshot.World.ID) {
-			return plan, resolved, fmt.Errorf("snapshot has no world source in the selected project")
+		if snapshot.Project != resolved.Config.Project {
+			return plan, resolved, fmt.Errorf("snapshot belongs to a different project")
 		}
-		plan.Method, plan.Path = http.MethodPost, prefix+"/worlds/"+snapshot.World.ID+"/promote"
-		plan.Body = map[string]string{"snapshot": input}
+		// 世界房间的快照回到原世界；其他房间的快照需要 --world 指定新世界。
+		target := *world
+		if snapshot.World != nil {
+			if target != "" && target != snapshot.World.ID || flags.Changed("title") {
+				return plan, resolved, fmt.Errorf("a world room snapshot is promoted into its own world without --title")
+			}
+			target = snapshot.World.ID
+		}
+		if !config.ValidID(target) {
+			return plan, resolved, fmt.Errorf("a room snapshot requires --world ID for the new world")
+		}
+		plan.Method, plan.Path = http.MethodPost, prefix+"/worlds/"+target+"/promote"
+		plan.Body = map[string]string{"snapshot": input, "title": *title}
 		return plan, resolved, nil
 	}
 	if action != "publish" || !config.ValidID(*world) {

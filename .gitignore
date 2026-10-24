@@ -17,3 +17,6 @@ world/
 snapshots/
 secrets/
 tokens/
+# 固定测试文件按 SHA-256 登记在 fixtures.json，必须进入仓库。
+!controller/internal/testfixture/testdata/*.jar
+!controller/internal/testfixture/testdata/*.tar.gz

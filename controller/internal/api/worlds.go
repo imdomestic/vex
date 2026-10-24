@@ -92,7 +92,11 @@ func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Id
 	if err = file.Close(); err != nil {
 		return err
 	}
-	value, created, err := s.Rooms.Worlds.Publish(r.Context(), metadata, file.Name())
+	policy, err := s.Rooms.DefaultWorldManifest(r.Context())
+	if err != nil {
+		return err
+	}
+	value, created, err := s.Rooms.Worlds.Publish(r.Context(), metadata, file.Name(), policy)
 	if err != nil {
 		return err
 	}
@@ -106,11 +110,12 @@ func (s *Server) worldPublish(w http.ResponseWriter, r *http.Request, id auth.Id
 func (s *Server) worldPromote(w http.ResponseWriter, r *http.Request, id auth.Identity) error {
 	var body struct {
 		Snapshot string `json:"snapshot"`
+		Title    string `json:"title"`
 	}
 	if err := decode(r, &body, false); err != nil {
 		return err
 	}
-	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot)
+	value, created, err := s.Rooms.Worlds.Promote(r.Context(), r.PathValue("id"), body.Snapshot, body.Title)
 	if err != nil {
 		return err
 	}

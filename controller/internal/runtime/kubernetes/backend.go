@@ -53,7 +53,7 @@ func (c *Client) referenceRoom(ref runtime.ResourceRef) (model.Room, error) {
 	if err != nil || generation < 1 || a["build"] == "" {
 		return model.Room{}, fmt.Errorf("invalid resource identity")
 	}
-	if a["kind"] != "branch" && a["kind"] != "commit" && a["kind"] != "world" {
+	if a["kind"] != "branch" && a["kind"] != "commit" && a["kind"] != "world" && a["kind"] != "pr" {
 		return model.Room{}, fmt.Errorf("invalid resource kind")
 	}
 	return model.Room{Project: c.cfg.ID, ID: ref.ID, BuildID: a["build"], Generation: generation, Kind: a["kind"]}, nil

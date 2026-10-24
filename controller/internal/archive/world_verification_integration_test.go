@@ -4,7 +4,6 @@ package archive
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
@@ -30,9 +31,9 @@ func TestRealWorldLocalVerificationWaitsForPackAndBackfills(t *testing.T) {
 func realWorldVerification(t *testing.T, remote bool) {
 	t.Helper()
 	tank, identity, knownHosts := os.Getenv("VEX_IT_TANK"), os.Getenv("VEX_IT_IDENTITY"), os.Getenv("VEX_IT_KNOWN_HOSTS")
-	scanner, source, metadataFile, packFile := os.Getenv("VEX_IT_SCANNER"), os.Getenv("VEX_IT_WORLD_ARCHIVE"), os.Getenv("VEX_IT_WORLD_METADATA"), os.Getenv("VEX_IT_PACK")
-	if scanner == "" || source == "" || metadataFile == "" || packFile == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
-		t.Skip("requires actual scanner, world archive, metadata, pack and selected archive backend")
+	scanner := os.Getenv("VEX_IT_SCANNER")
+	if scanner == "" || remote && (tank == "" || identity == "" || knownHosts == "") {
+		t.Skip("requires the Vex world scanner and selected archive backend")
 	}
 	if remote {
 		_, remoteRoot, err := target(tank)
@@ -40,21 +41,10 @@ func realWorldVerification(t *testing.T, remote bool) {
 			t.Fatal("isolated Vex tank test directory required", err)
 		}
 	}
-	for _, filename := range []string{source, metadataFile, packFile} {
-		resolved, err := filepath.EvalSymlinks(filename)
-		if err != nil || resolved == "/home/linwhite/d2-assets/sensitive" || strings.HasPrefix(resolved, "/home/linwhite/d2-assets/sensitive/") {
-			t.Fatal("invalid or forbidden source", err)
-		}
-	}
-	metadataBytes, err := os.ReadFile(metadataFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var metadata model.WorldMetadata
-	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
-		t.Fatal(err)
-	}
 	root := t.TempDir()
+	source := testfixture.File(t, "world-26.3.tar.gz")
+	packFile := testfixture.ResourcePack(t, filepath.Join(root, "resource-pack.zip"))
+	metadata := model.WorldMetadata{ID: "fixture", Title: "Vex 固定测试世界", Minecraft: "26.3", Requires: model.Requirements{Loaders: []string{"fabric"}, Mods: []string{}}, Source: model.Source{Scale: 1}}
 	cfg := config.ProjectConfig{ID: "verification-test", DataDir: filepath.Join(root, "data", "projects", "verification-test"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: metadata.Minecraft}}, Loaders: map[string]config.Loader{}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}}
 	for _, loader := range metadata.Requires.Loaders {
 		cfg.Loaders[loader] = config.Loader{Enabled: true}
@@ -79,13 +69,15 @@ func realWorldVerification(t *testing.T, remote bool) {
 	m.Worlds = worldManager
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	document, commit := testproject.Policy(t, filepath.Join(root, "project"))
+	policy := worlds.ManifestPolicy{SHA: commit.SHA, Document: document, Commit: &commit}
 	pack, _, err := worldManager.PublishPack(ctx, "verification", packFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadata.ID = "verified-plaza"
+	metadata.ID = "verified-fixture"
 	metadata.ResourcePack = &model.PackRef{ID: pack.ID, Rev: pack.Rev}
-	revision, _, err := worldManager.Publish(ctx, metadata, source)
+	revision, _, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || revision.TankVerifiedAt != nil {
 		t.Fatal("initial world publication failed", err)
 	}
@@ -156,7 +148,7 @@ func realWorldVerification(t *testing.T, remote bool) {
 	if err = os.Remove(metadataPath); err != nil {
 		t.Fatal(err)
 	}
-	again, created, err := worldManager.Publish(ctx, metadata, source)
+	again, created, err := worldManager.Publish(ctx, metadata, source, policy)
 	if err != nil || created || again.TankVerifiedAt == nil || !again.TankVerifiedAt.Equal(latest) {
 		t.Fatal("idempotent publication changed verified revision", err)
 	}

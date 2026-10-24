@@ -108,6 +108,12 @@ func TestProjectPolicyPortAndMemoryBoundaries(t *testing.T) {
 	if policy.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "instance-system" {
 		t.Fatal("router ingress does not use the configured system namespace")
 	}
+	router := policy.Spec.Ingress[0]
+	if len(router.From) != 1 || router.From[0].IPBlock != nil || router.From[0].PodSelector == nil ||
+		router.From[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "mc-router" ||
+		router.From[0].PodSelector.MatchLabels["app.kubernetes.io/part-of"] != "vex" {
+		t.Fatal("room ingress is not restricted to managed router Pods")
+	}
 	api := policy.Spec.Egress[1]
 	if len(api.To) != 1 || api.To[0].IPBlock.CIDR != "10.1.2.137/32" || len(api.Ports) != 1 || api.Ports[0].Port.IntVal != 8790 {
 		t.Fatal("API egress exception is not restricted to its endpoint")

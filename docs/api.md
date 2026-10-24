@@ -1,6 +1,6 @@
 # vex API v2
 
-本文是 vexd、vex CLI、Ruri 实验性 Vex 功能和 vex-agent 的接口契约，描述 P1 当前实现。路由注册位于 `controller/internal/api/routes.go`，数据模型位于 `controller/internal/model/model.go`。修改接口时同时修改本文和相关测试。
+本文是 vexd、vex CLI、Ruri 实验性 Vex 功能和 vex-agent 的接口契约。路由注册位于 `controller/internal/api/routes.go`，数据模型位于 `controller/internal/model/model.go`。修改接口时同时修改本文和相关测试。
 
 ## 通用约定
 
@@ -9,11 +9,24 @@
 - 普通 JSON 请求最多读取 1 MiB，拒绝未知字段和多个顶层 JSON 值。只有明确注明可空的端点接受空请求体；其余请求提供表中的 JSON 对象。JSON 响应带 `Cache-Control: no-store`。
 - 列表直接返回数组。除提交历史使用 `before` 以外，当前列表没有分页游标。
 - SHA 使用小写十六进制。提交 SHA 为完整的 40 个字符；文件 SHA-1、SHA-256、SHA-512 分别为 40、64、128 个字符，均根据实际入库字节计算。
-- `url`、`log` 是 API 相对路径，可相对于 `Meta.publicBaseURL` 使用；`path` 是项目数据目录内的相对路径，供归档与文件定位使用。客户端通过 HTTP 下载文件。
+- `url`、`log` 是 API 相对路径，可相对于 `Meta.publicBaseURL` 使用；`path` 是项目数据目录内的相对路径，供归档与文件定位使用。公开客户端使用 HTTPS，房间 Pod 可以通过受限的内部 HTTP 入口下载文件。
 - JAR、世界归档、资源包分别返回 `application/java-archive`、`application/gzip`、`application/zip`；文件响应支持 HTTP Range。日志返回 `text/plain; charset=utf-8`，已隐藏 Bearer 凭据和 URL 的 `sig/token` 值。
 - 项目、世界和资源包 ID 采用 `^[a-z][a-z0-9-]{0,22}$`，禁止 `--` 和末尾 `-`。房间主机名为 `<roomId>--<project>.<zone>`，组合后的第一个 DNS label 最长 63 个字符。
+- 启动时逐项目补录已有记录缺少的提交元数据与清单（Build、Snapshot、WorldRevision、Room）。补录完成前，该项目的写操作和 mrpack 导出返回 `503 project_initializing`；权限检查先执行，普通读取、平台健康检查及其他项目继续运行。后台循环等待该项目完成补录。镜像缺少所需提交时先刷新一次：刷新失败按最长 60 秒退避重试；刷新成功后仍无法读取的提交已不在仓库中，相关记录列入项目记录 `record_backfill/status` 的 `issues`（kind、id、sha、reason），项目照常开放。记录之间不一致时补录失败并重试。记录完整时无需访问 Git 即可通过补录。
 
 ## 认证和权限
+
+### 监听器与 TLS
+
+`server.listeners` 是 `{address,tls,scope}` 数组。`scope` 必须为 `public` 或 `internal`；TLS 监听器使用 `server.tls_cert_file` 与 `server.tls_key_file` 指定的绝对路径。旧的 `server.listen` 地址列表仍受支持，配置证书时该列表全部启用 TLS；两种列表不能同时显式配置。默认 loopback 地址会被显式 listeners 替代。
+
+服务启动时校验证书和私钥。每次完整 TLS 握手重新读取文件并检查匹配及有效期，文件变化不需要重启进程；无效的替换文件导致该次握手失败。SIGHUP 立即执行同样的校验并记录结果，NixOS 服务通过 `systemctl reload vexd` 提供入口。已有连接继续由原连接管理，API 和 SSE 不因证书重新读取而关闭。
+
+`internal` 入口在路由鉴权前检查真实连接来源：本机访问、实际 mc-router Pod，以及所属项目 namespace 内的平台房间 Pod 和归档 Job Pod。房间和归档来源均核对实际所有者 UID、项目、房间、build、generation 与 ServiceAccount；归档 Job 还须匹配平台生成的名称。容器先于 kubelet 发布 Pod IP 发出请求时，等待真实 Kubernetes 状态更新后核验；所有项目并行检查，共用最多 10 秒的期限。无关 Pod 或其他机器返回 403，来源查询错误返回 500。请求的 Bearer、签名 URL 与项目权限仍须单独验证，转发头不改变来源判定。宿主防火墙和项目 NetworkPolicy 同时限制内部 HTTP 的网络访问。
+
+`server.public_base_url` 决定公开元数据、邀请及对外文件链接的地址。切换 HTTPS 后，客户端使用新地址与重新签发的链接。服务器不通过明文入口重定向用户凭据。内部房间下载使用 `server.internal_base_url`，其地址和路由权限保持独立。
+
+### 用户与房间身份
 
 用户请求携带 `Authorization: Bearer <credential>`。P1 人工登录使用一次性邀请，成功后签发 32 字节随机数的 base64url 会话凭据，数据库仅保存 SHA256。静态 `token_sha256` 供服务账号使用，与会话凭据共用 Bearer 入口。会话每次通过认证后更新 lastUsedAt，并将 expiresAt 顺延 auth.session_ttl；吊销后立即失效。API 不返回凭据摘要。签名密钥从 `auth.signing_key_file` 读取。
 
@@ -39,6 +52,7 @@
 | `room` | 当前项目的有效房间凭据。 |
 | `room-or-viewer` | 项目 viewer 及以上，或满足目标房间/租约检查的房间凭据。 |
 | `download` | 项目 viewer 及以上、当前房间自己的构建凭据，或当前 URL 的有效签名。 |
+| `viewer-download` | 项目 viewer 及以上，或当前 URL 的有效签名；用于 MRPack 下载。 |
 | `developer-download` | 项目 developer 及以上，或当前 URL 的有效签名。 |
 | `seed-download` | 项目 developer 及以上、房间固定种子匹配的房间凭据，或当前 URL 的有效签名。 |
 | `pack-download` | 项目 viewer 及以上，或当前 URL 的有效签名。 |
@@ -46,7 +60,7 @@
 
 房间凭据使用 HMAC-SHA256 签名，包含 `project`、`roomId`、`generation`、`buildId`、`expires`。除检查签名和过期时间，还必须与数据库中当前房间的项目、generation、buildId 匹配，且房间尚未 `closed`。房间凭据访问其他项目或需要用户认证的平台接口返回 404；访问同项目中未授予房间身份的端点返回 403。房间读取目标房间时，目标必须是自身或具有有效 hop 租约；租约必须匹配源房间和源 generation，以及目标 generation。
 
-文件签名通过 `exp`、`sig` 查询参数传递，覆盖 GET 方法、URL 转义后的完整路径和到期时间，只在四种下载权限的路由有效。下载授权不会授予其他 API 权限。房间凭据不能下载任意项目构建或任意世界种子；快照和资源包使用已签名 URL 注入服务器。
+文件签名通过 `exp`、`sig` 查询参数传递，覆盖 GET 方法、URL 转义后的完整路径和到期时间，只在表中的下载权限路由有效。下载授权不会授予其他 API 权限。房间凭据不能下载任意项目构建或任意世界种子；快照和资源包使用已签名 URL 注入服务器。
 
 ## 端点
 
@@ -72,7 +86,9 @@
 | GET | `P/branches` | viewer | 无 | 200 `Branch[]` |
 | GET | `P/commits` | viewer | 查询 `branch`、`before`、`limit` | 200 `Commit[]` |
 
-`commits.branch` 默认使用项目默认分支；`limit` 默认 50，必须是正整数。顺序来自 `git rev-list --topo-order`。`before` 是上一页最后一个提交的完整 SHA，返回该提交之后的历史；游标不在所选分支历史中时返回 404。`parents` 包含完整父提交 SHA，`refs` 提供该提交的引用名称。
+`commits.branch` 默认使用项目默认分支；`limit` 默认 50，必须是正整数。顺序来自 `git rev-list --topo-order`。`before` 是上一页最后一个提交的完整 SHA，返回该提交之后的历史；游标不在所选分支历史中时返回 404。`parents` 包含完整父提交 SHA，`refs` 提供该提交的引用名称。提交列表只显示远端现有的历史。
+
+镜像只用于取得新的提交并构建。Build、Room、Snapshot、WorldRevision 在创建或改变提交时写入 `commit:{sha,subject,author,time}`；Build、Snapshot、WorldRevision 同时写入创建时解析的清单 `manifest`。之后的显示、启动、恢复、mrpack 导出与世界提升只读取记录本身。被测试项目改写历史后，镜像照常 prune 和 gc；每次成功刷新后，提交已不在任何远端 ref 可达历史中的记录写入 `commitMissingAt`（客户端显示为“提交已不在仓库中”），提交重新出现时清除。新建构建、在这样的提交上创建 commit/world 房间、导入其 CI 产物时返回 409 `commit_unavailable`；已有记录照常使用。
 
 显式刷新同步等待 fetch，超时为 10 秒，失败时请求返回错误。启动尚未运行的分支房间也会同步 fetch；这一启动路径在 fetch 失败且具有缓存时继续使用缓存，并在 `phase` 标注“使用缓存的分支信息”。周期刷新频率由项目 Git 配置决定。新分支登记对应房间；分支推进后正在运行的房间保留当前构建，`behindHead=true`，下一次启动使用新 head。
 
@@ -92,7 +108,7 @@ Unix 管理接口为 POST `/v2/auth/invites`（必须指定 user）、GET `/v2/a
 
 `status` 允许 `queued/building/ready/failed`，`loader` 必须在项目内启用。列表按 `queuedAt` 降序，同时间按 ID 升序。Build ID 为 `<loader>-<sha12>`；完整 SHA 不同而短 ID 相同时返回 409 `conflict`。
 
-构建来源固定为 `{kind:"host"}`；只有 `trust="trusted"` 且 `build.source="host"` 的项目可以提交构建，否则返回 `sandbox_unavailable`。`force` 默认 false：已存在的记录直接返回；queued/building 即使 force 也保持原任务。failed 可以显式 force 重建；ready 只有在没有未关闭房间引用时可以 force，受引用保护时返回 `conflict`。每个真正新建的执行尝试增加 `attempt`，Build ID 保持不变。
+POST 构建端点创建 `{kind:"host"}` 来源；只有 `trust="trusted"` 且 `build.source="host"` 的项目可以提交此请求，否则返回 `sandbox_unavailable`。CI pull 导入的构建使用 `{kind:"ci",…}`，包含 GitHub run 身份，见“P2 构建与房间包”。`force` 默认 false：已存在的记录直接返回；queued/building 即使 force 也保持原任务。failed 可以显式 force 重建；ready 只有在没有未关闭房间引用时可以 force，受引用保护时返回 `conflict`。每个真正新建的执行尝试增加 `attempt`，Build ID 保持不变。
 
 构建产物、解析的依赖和配置的 agent 全部出现在 `Build.files`。客户端下载 `side=both/client` 的文件；服务端注入 `side=both/server` 的文件。全部文件采用构建文件端点下载，manifest 提供三个摘要和字节长度。`modIds` 从模组元数据读取，用于世界兼容性检查。
 
@@ -108,11 +124,12 @@ Unix 管理接口为 POST `/v2/auth/invites`（必须指定 user）、GET `/v2/a
 | POST | `P/rooms/{id}/start` | viewer | 可空，或 JSON `{seed?:string}` | 200/202 `StartResult` |
 | POST | `P/rooms/{id}/stop` | developer | 无 | 200/202 `Room` |
 | POST | `P/rooms/{id}/restart` | developer | 无 | 200/202 `Room` |
+| POST | `P/rooms/{id}/reset-world` | admin | JSON `{confirm:string,seed?:string}` | 200 `Room` |
 | DELETE | `P/rooms/{id}/leases/{lease}` | room-or-viewer | 无 | 204 |
 | GET | `P/rooms/{id}/log` | developer | 无 | 200 日志文本 |
 | GET | `P/rooms/{id}/events` | viewer | 无 | 200 SSE，仅房间及关联构建 |
 
-`kind` 为 `branch/commit/world`；手动创建只接受 `commit/world`。branch 由 Git 同步登记。commit 房间 ID 为 `c<sha8>-<loader>`，world 房间为 `w-<worldId>-<sha8>-<loader>`；短 ID 冲突返回 `conflict`。创建只登记 stopped 房间；实际启动通过 start 请求进行。世界房间固定使用 `seed="world:<worldId>"`。
+`kind` 为 `branch/commit/world/pr`，列表过滤支持这四种值；手动创建只接受 `commit/world`。branch 由 Git 同步登记，pr 由已就绪的 CI 构建登记。commit 房间 ID 为 `c<sha8>-<loader>`，world 房间为 `w-<worldId>-<sha8>-<loader>`，PR 房间为 `pr<number>-<loader>`；短 ID 冲突返回 `conflict`。创建只登记 stopped 房间；实际启动通过 start 请求进行。世界房间固定使用 `seed="world:<worldId>"`。
 
 `StartResult` 为 `{room:Room,lease:Lease}`。每次受理 start 都发放新租约；活跃周期保持 generation，不重复启动进程。开始新周期时 generation 增加，已删除房间从独立墓碑继续计数。`accept_eula=false` 时 start 返回 409 `eula_not_accepted`。已 ready 房间会在响应前通过 router 进行 SLP 核验；匹配则返回 200；失败则返回 202、`state="starting"`、`phase="re-verify"`。其余受理情况返回 202。
 
@@ -131,6 +148,8 @@ Unix 管理接口为 POST `/v2/auth/invites`（必须指定 user）、GET `/v2/a
 
 stop 对 stopped/closed 房间返回 200；其他状态进入停止流程，返回 202。restart 在停止后开始新周期；stopped/closed 可以直接进入启动流程。lost 无法明确世界状态，stop/restart 返回 `node_lost`。label=finished 会取消自动重启并进入关闭流程；重新启动前需要将 label 设回 testing。
 
+reset-world 只用于分支房间，只有 admin 可用（同时需要项目可见）。`confirm` 必须与房间 ID 完全一致，否则返回 400 `invalid_request`。前提条件：房间为 stopped 或 closed，label 为 finished，保留着世界，并且该房间 generation 最大的快照已经通过 tank 校验（停止流程保证此后的周期没有运行过进程）；任一条件不满足返回 409 `conflict`。删除前解析并校验 seed。执行时按 UID 删除世界卷（Kubernetes 后端为 PVC）并等待删除完成，清除 runtime 中的世界状态，`seed` 写入房间（默认 `empty`），`seedResolved` 与 `lastError` 清空，保存 `world_reset` 记录并发送同名 SSE 事件；记录字段为 `{project,roomId,generation,volumeUid,snapshotId,seed,at}`。响应返回更新后的 Room，label、state 和 generation 保持原值；已有快照与世界资产保留。重新设为 testing 后，下一次启动按 seed 创建世界。命令 `vex room reset-world <room> -p <project> [--seed SEED]` 发送请求前要求输入房间 ID。
+
 DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、没有有效租约、没有受保留规则保护快照的记录；否则返回 `conflict`。删除保留 generation 墓碑。commit/world 房间关闭超过 30 天且不受保留快照或世界引用保护时也可被自动清理。
 
 ### 世界、资源包和快照
@@ -143,7 +162,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | POST | `P/worlds/{id}/revisions` | developer | multipart，见下文 | 201 新 `WorldRevision`；200 相同内容 |
 | GET | `P/worlds/{id}/revisions/{rev}` | viewer | 无 | 200 `WorldRevision` |
 | GET | `P/worlds/{id}/revisions/{rev}/download` | seed-download | 无 | 200/206 tar.gz |
-| POST | `P/worlds/{id}/promote` | developer | JSON `{snapshot:"<snapshotId>"}` | 201 新 `WorldRevision`；200 相同内容 |
+| POST | `P/worlds/{id}/promote` | developer | JSON `{snapshot:"<snapshotId>",title?:string}` | 201 新 `WorldRevision`；200 相同内容 |
 | POST | `P/worlds/{id}/restore` | developer | 可空，或 `{}` | 200 本地就绪 `World`；202 已排队 |
 | GET | `P/packs` | viewer | 无 | 200 `PackRevision[]` |
 | POST | `P/packs/{id}/revisions` | developer | `application/zip`，最多 8 GiB | 201 新 `PackRevision`；200 已有内容 |
@@ -154,9 +173,9 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | GET | `P/snapshots/{id}/download` | developer-download | 无 | 200/206 tar.gz |
 | POST | `P/snapshots/{id}/restore` | developer | 可空，或 `{}` | 200 本地就绪 `Snapshot`；202 已排队 |
 
-世界上传必须包含且仅包含两个 multipart 字段：`metadata` 的 Content-Type 为 `application/json`，内容为 `WorldMetadata`，最多 1 MiB；`world` 的 Content-Type 为 `application/gzip`，内容为世界 tar.gz。总请求最多 32 GiB + 1 MiB。metadata.id 必须匹配路径中的 ID。世界归档必须通过目录安全检查、Minecraft 版本检查和项目额外根目录规则；服务端扫描实际命名空间，若显式声明 namespaces 则必须与扫描结果一致。
+世界上传必须包含且仅包含两个 multipart 字段：`metadata` 的 Content-Type 为 `application/json`，内容为 `WorldMetadata`，最多 1 MiB；`world` 的 Content-Type 为 `application/gzip`，内容为世界 tar.gz。总请求最多 32 GiB + 1 MiB。metadata.id 必须匹配路径中的 ID。上传使用当前已同步默认分支提交的 `vex.toml`，或配置的 manifest fallback，校验 Minecraft、loader 和额外根目录；服务端扫描实际命名空间，若显式声明 namespaces 则必须与扫描结果一致。revision 保存该完整提交 SHA、提交元数据、清单和允许的根目录列表；`revision.json` 同样包含 `manifestSha`、`extraRootEntries`、`commit` 与 `manifest`。promote 只使用快照记录中的提交与清单，不读取 Git；快照缺少记录的清单时返回 409 `conflict`。恢复使用记录中保存的目录列表。
 
-每个世界独立使用递增十进制整数字符串 revision（`"1"`、`"2"`）。上传世界的 SHA-256 等于当前 latestRev 时返回原 revision；相同文件且 metadata 不同也保持已有 revision。否则新增 revision 并更新 latestRev。promote 使用目标世界的编辑快照，遵守相同的内容幂等规则。资源包 rev 等于 ZIP 的 SHA-256；GET 文件名必须是 64 个小写十六进制字符加 `.zip`。
+每个世界独立使用递增十进制整数字符串 revision（`"1"`、`"2"`）。上传世界的 SHA-256 等于当前 latestRev 时返回原 revision；相同文件且 metadata 不同也保持已有 revision。否则新增 revision 并更新 latestRev。world 房间的快照只能提升回所属世界，不接受 title；其他房间（branch、commit、pr）的快照创建一个新世界：目标世界必须尚不存在，title 默认为世界 ID，Minecraft 版本与 loader 取自快照及其 Build ID，命名空间由服务端扫描。目标世界最新 revision 已经来自同一快照时返回该 revision（200），其他已存在的世界返回 409 `conflict`。两种 promote 都遵守相同的内容幂等规则。资源包 rev 等于 ZIP 的 SHA-256；GET 文件名必须是 64 个小写十六进制字符加 `.zip`。
 
 快照列表按 capturedAt 降序、同时间按 ID 升序。上传最多 32 GiB；query 中的 room/build/generation 必须与当前有效房间凭据相符，归档由服务端校验。Snapshot ID 为 `<roomId>-g<generation>`，同 ID 内容不一致会冲突。快照记录实际保存时刻 capturedAt 和入库时刻 createdAt。当前周期的快照只有通过停止/归档身份与状态检查后才可发布。
 
@@ -179,7 +198,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 
 | 类型 | 字段 |
 | --- | --- |
-| `PublicMeta` | `name:string`、`version:string`、`auth:{methods:["invite"]}`。name 来自 server.name，默认主机名；version 为 `0.3.0`。 |
+| `PublicMeta` | `name:string`、`version:string`、`auth:{methods:string[]}`。methods 包含 invite，启用 GitHub provider 时还包含 github；name 来自 server.name，默认主机名；version 为 `0.3.0`。 |
 | `Meta` | PublicMeta 全部字段，以及 `zone:string`、`publicBaseURL:string`、`runtimes:{name:{java:int,serverImage:string}}`、`agents:[{minecraft,loader,version}]`。 |
 | `User` | `id:string`、`admin:bool`、`minecraft:string[]`、`identities:string[]`、`projects:{projectId:role}`。 |
 | `Session` | `id:string`、`user:string`、`client:string`、`createdAt`、`lastUsedAt`、`expiresAt`、`current:bool`。响应不包含凭据及摘要。 |
@@ -188,7 +207,9 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | `Branch` | `project`、`name`、`head`、`rooms:{loader:roomId}`、`builds:{loader:BuildSummary?}`。 |
 | `Commit` | `project`、`sha`、`parents:string[]`、`subject`、`author`、`time`、`refs:string[]`、`builds:{loader:BuildSummary?}`。 |
 | `BuildSummary` | `id`、`status`。 |
-| `Build` | `project`、`id`、`source:{kind:"host"}`、`sha`、`loader`、`status`、`attempt:int`、`queuedAt`、`startedAt?`、`finishedAt?`、`minecraft:string?`、`loaderVersion:string?`、`java:int?`、`builtAt?`、`durationSec:number?`、`modIds:string[]`、`files:BuildFile[]`、`log:string`、`lastError:Error?`。 |
+| `Build` | `project`、`id`、`source:{kind:"host"/"ci",repository?,workflow?,runId?,runAttempt?,prNumber?,event?,htmlUrl?}`、`sha`、`loader`、`status`、`attempt:int`、`queuedAt`、`startedAt?`、`finishedAt?`、`minecraft:string?`、`loaderVersion:string?`、`java:int?`、`builtAt?`、`durationSec:number?`、`modIds:string[]`、`files:BuildFile[]`、`log:string`、`lastError:Error?`、`commit:CommitInfo?`、`manifest:Manifest?`、`commitMissingAt:time?`。source 的可选字段无值时省略。 |
+| `CommitInfo` | `sha`、`subject`、`author`、`time`。记录创建时从 Git 读取。 |
+| `Manifest` | 创建记录时解析并校验的 `vex.toml`：`schema`、`minecraft:{version,java}`、`loaders:{id:{loaderVersion,build,agent,files,deps}}`、`world:{extraRootEntries}`、`rooms:{memory}`。 |
 | `BuildFile` | `name`、`sha1`、`sha256`、`sha512`、`size:int64`、`side:"both"/"client"/"server"`、`url`、`path`。 |
 
 ### Room
@@ -196,7 +217,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | 字段 | 含义 |
 | --- | --- |
 | `project`、`id` | 项目 ID 与项目内房间 ID。 |
-| `kind` | `branch/commit/world`。 |
+| `kind` | `branch/commit/world/pr`。 |
 | `branch:string?` | 分支房间的原始 Git 分支名称。 |
 | `sha`、`loader`、`buildId` | 当前周期完整提交 SHA、loader 和构建 ID。 |
 | `generation:int64` | 周期计数，创建记录时为 0 或墓碑保存值，每次新启动加一。 |
@@ -213,6 +234,8 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | `lastSnapshot:time?` | 最近快照的捕获时间。 |
 | `lastError:Error?` | 最近房间错误。 |
 | `createdAt`、`updatedAt`、`closedAt:time?` | 创建、更新与关闭时间。 |
+| `commit:CommitInfo?` | 当前 `sha` 的提交元数据。 |
+| `commitMissingAt:time?` | 当前 `sha` 已不在仓库现有历史中的时间。 |
 
 房间状态及主要转移：
 
@@ -240,10 +263,10 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | `Source` | `repo:string`、`commit:string`、`scale:number`、`notes:string`。 |
 | `WorldMetadata` | `id`、`title`、`minecraft`、`requires:Requirements`、`resourcePack:PackRef?`、`source:Source`。 |
 | `World` | `project`、`id`、`title`、`state:"active"/"archived"`、`latestRev`、`minecraft`、`requires`、`resourcePack:PackRef?`、`restore:WorldRestore?`。 |
-| `WorldRevision` | WorldMetadata 的全部顶层字段，另加 `project`、`rev`、`snapshotId:string?`、`world:WorldFile`、`createdAt`、`tankVerifiedAt:time?`。 |
+| `WorldRevision` | WorldMetadata 的全部顶层字段，另加 `project`、`rev`、`snapshotId:string?`、`world:WorldFile`、`createdAt`、`tankVerifiedAt:time?`、`manifestSha:string`、`extraRootEntries:string[]`、`commit:CommitInfo?`、`manifest:Manifest?`、`commitMissingAt:time?`。 |
 | `WorldFile` | `sha1`、`sha256`、`sha512`、`size:int64`、`url`、`path`。 |
 | `PackRevision` | `project`、`id`、`rev`、`sha1`、`sha256`、`sha512`、`size:int64`、`url`、`path`、`createdAt`。 |
-| `Snapshot` | `project`、`id`、`roomId`、`roomGeneration:int64`、`buildId`、`minecraft`、`world:PackRef?`、`capturedAt`、`createdAt`、`sha1`、`sha256`、`sha512`、`path`、`size:int64`、`localAvailable:bool`、`tankVerifiedAt:time?`、`restore:Restore?`。Snapshot.world 表示世界 ID 和 revision。 |
+| `Snapshot` | `project`、`id`、`roomId`、`roomGeneration:int64`、`buildId`、`minecraft`、`world:PackRef?`、`capturedAt`、`createdAt`、`sha1`、`sha256`、`sha512`、`path`、`size:int64`、`localAvailable:bool`、`tankVerifiedAt:time?`、`restore:Restore?`、`manifestSha:string`、`worldExtraRootEntries:string[]`、`commit:CommitInfo?`、`manifest:Manifest?`、`commitMissingAt:time?`。Snapshot.world 表示世界 ID 和 revision；commit 与 manifest 在采集时从所属 Build 复制。 |
 | `Restore` | `attempt:int`、`status`、`requestedAt`、`startedAt?`、`finishedAt?`、`error:Error?`。 |
 | `WorldRestore` | Restore 的全部字段，加 `revision:string`。 |
 | `HopDestination` | `project`、`dest`、`kind`、`id`、`title`、`roomId:string?`、`buildId`、`state`。 |
@@ -267,6 +290,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | `branch_added` | 完整 Branch | 刷新发现新分支。 |
 | `branch_moved` | 完整 Branch | 刷新发现 head 变化。 |
 | `branch_deleted` | `{project,name}` | 刷新发现分支删除。 |
+| `world_reset` | `{project,roomId,generation,volumeUid,snapshotId,seed,at}` | 管理员重置分支房间世界。 |
 
 记录变化通常由事件循环每秒读取数据库后发布；Git 事件由刷新直接发布。单房间订阅只接收相关 room/ready/failed/room_deleted 和当前 Build 的 build/build_deleted。每 15 秒输出 `: ping` 注释。事件 `id` 是进程内递增序号，仅供诊断；服务器忽略 Last-Event-ID，每次重连重新 sync。订阅缓冲满时关闭连接，客户端重连并以 sync 替换本地状态。
 
@@ -287,6 +311,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | 409 | `conflict` | 状态冲突、短 ID 冲突、受保护对象、固定种子冲突。 |
 | 409 | `build_failed` | 所需构建失败，需要显式重建。 |
 | 409 | `build_mismatch` | Minecraft、loader、命名空间或 hop 构建不兼容。 |
+| 409 | `commit_unavailable` | 提交不在仓库的现有历史中，不能在这个提交上重新构建、创建房间或导入 CI 产物。 |
 | 409 | `sandbox_unavailable` | 请求的构建来源与项目可信策略无法支持当前执行方式。 |
 | 409 | `eula_not_accepted` | 项目没有接受 Minecraft EULA。 |
 | 409 | `room_finished` | 房间标记 finished，不能启动。 |
@@ -294,10 +319,32 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | 409 | `start_timeout` | 服务器未在启动期限内就绪；通常作为异步房间错误。 |
 | 409 | `archive_failed` | 归档、恢复或存储空间检查失败。 |
 | 500 | `internal_error` | 未分类的服务端错误；响应隐藏内部错误详情。 |
+| 503 | `project_initializing` | 项目已有记录正在补录，当前写操作或 mrpack 导出尚不可用。 |
+| 503 | `provider_unavailable` | 当前 GitHub 登录服务不可用。 |
+
+## GitHub device flow
+
+`POST /v2/auth/device` 接受空对象 `{}`，返回 `{handle,userCode,verificationUri,expiresAt,interval}`。`handle` 是本次登录专用的随机凭据，只供客户端后续查询；服务端仅保留它的摘要。等待中的授权保存在平台数据库记录 `device_attempt`：handle 摘要、GitHub device_code、interval、到期时间、客户端名称，以及后台查询得到的账号或错误；完成、取消或到期时删除。vexd 重启后继续向 GitHub 查询，客户端照常轮询。device_code 不写入日志或响应。
+
+`POST /v2/auth/device/cancel` 接受 `{handle}`，删除等待中的授权并停止后台查询，返回 204；未知或已结束的 handle 同样返回 204。
+
+`POST /v2/auth/device/poll` 接受 `{handle,client}`，`client` 为本次客户端名称，首次查询后保持一致。等待授权时返回 HTTP 202 `{status:"pending",interval}`；授权成功且 GitHub 数字账号 ID 对应已配置用户时返回 HTTP 200 `{token,user,expiresAt}`。客户端遵守 interval 和 Retry-After。成功结果只能领取一次，token 是 Vex 自己的会话。GitHub access token 仅用于读取账号身份，随后丢弃。
+
+错误为 HTTP 400 `expired_token` / `invalid_request`、403 `access_denied` / `account_not_linked`、429 `rate_limited`、503 `provider_unavailable`。未配置的 GitHub 账号返回 `account_not_linked`。`GET /v2/meta` 的 `auth.methods` 在启用该 provider 后包含 `github`。
+
+## P2 构建与房间包
+
+Build 新增 `clientFingerprint`、`roomMemory`、`worldExtraRootEntries`。CI Build 的 source 记录 repository、workflow、runId、runAttempt、prNumber；提交 SHA 来自 GitHub API。所有 loader 共用一次已校验的 bundle 导入事务，重复导入同一 runId/runAttempt 保持幂等。
+
+客户端指纹为以下紧凑 JSON 的 UTF-8 字节的 SHA256，字段顺序固定：`{"minecraft":"...","loader":"...","loaderVersion":"...","sha512":["..."]}`。sha512 包含 side=client/both 的文件，统一小写、去重、字典序排列。服务端专用文件不参与。
+
+Build 和 Room 的 `pack.mrpack` 端点允许项目 viewer 或单次下载签名。Room 包含 `overrides/servers.dat`，版本标识包含 room、generation、build 和 attempt。mrpack 导出完成全部哈希校验后才发送响应。Room 下载可带 `buildId` 和 `generation` 查询参数，两者必须同时提供；与目标房间不一致时返回 HTTP 409 `build_mismatch`。加入操作使用 start 响应的这两个值固定下载目标。
+
+PR 对象包含 project、number、title、url、author、state、draft、headSha、headRepository、baseBranch、fork、approved、rooms、builds、updatedAt。`rooms` 是 loader 到 room ID 的映射，`builds` 是 loader 到当前 head 可用 Build ID 的映射。房间新增 kind=`pr`、pullNumber、previewAccess 和 `pr:{number,title,author,url,headSha,fromFork}`。Build 的 `source` 包含 kind、repository、workflow、runId、runAttempt、prNumber、event、htmlUrl。PR 关闭后无法重新启动。Ruri 打开链接格式为 `ruri://vex?server=<baseURL>&project=<project>&room=<room>`，各参数使用 URL 查询编码。
 
 ## 路由契约校验
 
-下面的 JSON 区块是完整路由目录，每项依次为方法、完整路径、权限。`controller/internal/api/contract_test.go` 使用标准 JSON 序列化从 `Routes()` 生成同一目录，直接比较完整区块。新增、删除、改名或权限变更均需要同步文档。P2 及后续的 CI、mrpack、OAuth、委托与大厅接口尚未注册，不属于当前端点。
+下面的 JSON 区块是完整路由目录，每项依次为方法、完整路径、权限。`controller/internal/api/contract_test.go` 使用标准 JSON 序列化从 `Routes()` 生成同一目录，直接比较完整区块。新增、删除、改名或权限变更均需要同步文档。CI push、OIDC、委托与大厅接口属于后续阶段。
 
 ```json vex-routes
 [
@@ -306,6 +353,9 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
   ["GET","/v2/me","user"],
   ["POST","/v2/auth/invites","user"],
   ["POST","/v2/auth/invites/redeem","public"],
+  ["POST","/v2/auth/device","public"],
+  ["POST","/v2/auth/device/poll","public"],
+  ["POST","/v2/auth/device/cancel","public"],
   ["GET","/i/{code}","public"],
   ["GET","/v2/me/sessions","user"],
   ["DELETE","/v2/me/sessions/{id}","user"],
@@ -318,19 +368,23 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
   ["POST","/v2/projects/{p}/git/refresh","developer"],
   ["GET","/v2/projects/{p}/branches","viewer"],
   ["GET","/v2/projects/{p}/commits","viewer"],
+  ["GET","/v2/projects/{p}/pulls","viewer"],
   ["GET","/v2/projects/{p}/builds","viewer"],
   ["POST","/v2/projects/{p}/builds","developer"],
   ["GET","/v2/projects/{p}/builds/{id}","viewer"],
+  ["GET","/v2/projects/{p}/builds/{id}/pack.mrpack","viewer-download"],
   ["GET","/v2/projects/{p}/builds/{id}/log","developer"],
   ["GET","/v2/projects/{p}/builds/{id}/files/{name}","download"],
   ["GET","/v2/projects/{p}/rooms","viewer"],
   ["POST","/v2/projects/{p}/rooms","developer"],
   ["GET","/v2/projects/{p}/rooms/{id}","room-or-viewer"],
+  ["GET","/v2/projects/{p}/rooms/{id}/pack.mrpack","viewer-download"],
   ["PATCH","/v2/projects/{p}/rooms/{id}","developer"],
   ["DELETE","/v2/projects/{p}/rooms/{id}","owner"],
   ["POST","/v2/projects/{p}/rooms/{id}/start","viewer"],
   ["POST","/v2/projects/{p}/rooms/{id}/stop","developer"],
   ["POST","/v2/projects/{p}/rooms/{id}/restart","developer"],
+  ["POST","/v2/projects/{p}/rooms/{id}/reset-world","admin"],
   ["DELETE","/v2/projects/{p}/rooms/{id}/leases/{lease}","room-or-viewer"],
   ["GET","/v2/projects/{p}/rooms/{id}/log","developer"],
   ["GET","/v2/projects/{p}/rooms/{id}/events","viewer"],

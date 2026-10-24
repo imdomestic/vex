@@ -84,6 +84,22 @@ func TestConfigCommandsUseSharedFourLayerResolution(t *testing.T) {
 	}
 }
 
+func TestResetWorldRequiresTypedRoomIDBeforeAnyRequest(t *testing.T) {
+	cleanClientEnvironment(t)
+	// 服务器地址不可连接：确认不一致时命令必须在发送请求之前结束。
+	file := clientConfigFile(t, "url = 'http://127.0.0.1:1'\nproject = 'example-mod'\n")
+	var output bytes.Buffer
+	err := runWithInput(context.Background(), []string{"--config", file, "room", "reset-world", "main-fabric"}, strings.NewReader("main-fabrc\n"), &output)
+	if err == nil || !strings.Contains(err.Error(), "没有执行重置") || !strings.Contains(output.String(), "请输入房间 ID") {
+		t.Fatalf("mismatched confirmation: %v %q", err, output.String())
+	}
+	output.Reset()
+	err = runWithInput(context.Background(), []string{"--config", file, "room", "reset-world", "main-fabric"}, strings.NewReader(""), &output)
+	if err == nil || !strings.Contains(err.Error(), "没有执行重置") {
+		t.Fatalf("empty confirmation: %v", err)
+	}
+}
+
 func TestProjectCommandPlans(t *testing.T) {
 	cleanClientEnvironment(t)
 	file := clientConfigFile(t, "project = 'example-mod'\n")
@@ -100,9 +116,9 @@ func TestProjectCommandPlans(t *testing.T) {
 		{[]string{"rooms", "delete", "main-fabric"}, http.MethodDelete, "/v2/projects/example-mod/rooms/main-fabric"},
 		{[]string{"snapshots", "restore", "main-fabric-g1"}, http.MethodPost, "/v2/projects/example-mod/snapshots/main-fabric-g1/restore"},
 		{[]string{"world", "list"}, http.MethodGet, "/v2/projects/example-mod/worlds"},
-		{[]string{"world", "show", "plaza"}, http.MethodGet, "/v2/projects/example-mod/worlds/plaza"},
-		{[]string{"world", "archive", "plaza"}, http.MethodPatch, "/v2/projects/example-mod/worlds/plaza"},
-		{[]string{"world", "restore", "plaza"}, http.MethodPost, "/v2/projects/example-mod/worlds/plaza/restore"},
+		{[]string{"world", "show", "spawn"}, http.MethodGet, "/v2/projects/example-mod/worlds/spawn"},
+		{[]string{"world", "archive", "spawn"}, http.MethodPatch, "/v2/projects/example-mod/worlds/spawn"},
+		{[]string{"world", "restore", "spawn"}, http.MethodPost, "/v2/projects/example-mod/worlds/spawn/restore"},
 	}
 	for _, item := range cases {
 		t.Run(strings.Join(item.args[:2], "-"), func(t *testing.T) {
@@ -122,7 +138,11 @@ func TestProjectCommandPlans(t *testing.T) {
 	if plan.Body.(map[string]any)["seed"] != "" {
 		t.Fatal("CLI overrode project default seed without a seed argument")
 	}
-	for _, args := range [][]string{{"builds", "create", "--commit", strings.Repeat("a", 40)}, {"rooms", "start"}, {"git", "commits", "--limit", "0"}, {"world", "show", "bad--id"}} {
+	plan, _, err = planCommand(context.Background(), configuredFlags(t, file), []string{"rooms", "reset-world", "main-fabric", "--seed", "empty"})
+	if err != nil || plan.Method != http.MethodPost || plan.Path != "/v2/projects/example-mod/rooms/main-fabric/reset-world" || plan.Confirm != "main-fabric" || plan.Body.(map[string]string)["seed"] != "empty" || plan.Body.(map[string]string)["confirm"] != "" {
+		t.Fatalf("reset-world plan: %+v %v", plan, err)
+	}
+	for _, args := range [][]string{{"builds", "create", "--commit", strings.Repeat("a", 40)}, {"rooms", "start"}, {"git", "commits", "--limit", "0"}, {"world", "show", "bad--id"}, {"snapshots", "reset-world", "main-fabric-g1"}} {
 		if _, _, err := planCommand(context.Background(), configuredFlags(t, file), args); err == nil {
 			t.Fatalf("invalid command accepted: %s", args[0])
 		}

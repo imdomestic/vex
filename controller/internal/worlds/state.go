@@ -100,6 +100,9 @@ func (m *Manager) RequestRestore(ctx context.Context, id string) (model.World, b
 		if err := tx.Get(ctx, "world_revision", id+":"+result.LatestRev, &revision); err != nil {
 			return err
 		}
+		if err := revisionPolicyRecorded(revision); err != nil {
+			return err
+		}
 		tasks, err := m.requiredTransfers(ctx, tx, revision)
 		if err != nil {
 			return err
@@ -118,7 +121,7 @@ func (m *Manager) RequestRestore(ctx context.Context, id string) (model.World, b
 			}
 		}
 		if complete {
-			if err = worldarchive.Validate(m.absolute(revision.World.Path), revision.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
+			if err = worldarchive.Validate(m.absolute(revision.World.Path), revision.Minecraft, revision.ExtraRootEntries...); err != nil {
 				return model.Failure("archive_failed", err.Error())
 			}
 			if revision.ResourcePack != nil {
@@ -214,6 +217,9 @@ func (m *Manager) restoreFiles(ctx context.Context, worldRecord model.World, dow
 	if err != nil {
 		return err
 	}
+	if err = revisionPolicyRecorded(revision); err != nil {
+		return err
+	}
 	tasks, err := m.requiredTransfers(ctx, m.db, revision)
 	if err != nil {
 		return err
@@ -247,7 +253,7 @@ func (m *Manager) restoreFiles(ctx context.Context, worldRecord model.World, dow
 	if partial, ok := staged[revision.World.Path]; ok {
 		world = m.absolute(partial)
 	}
-	if err = worldarchive.Validate(world, revision.Minecraft, m.cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err = worldarchive.Validate(world, revision.Minecraft, revision.ExtraRootEntries...); err != nil {
 		return err
 	}
 	namespaces, err := m.scan(ctx, world, revision.Minecraft)

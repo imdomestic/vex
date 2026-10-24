@@ -15,6 +15,7 @@ type roomTombstone struct {
 	SHA        string  `json:"sha"`
 	Loader     string  `json:"loader"`
 	World      *string `json:"world"`
+	PullNumber *int    `json:"pullNumber"`
 	Generation int64   `json:"generation"`
 }
 
@@ -56,7 +57,11 @@ func (m *Manager) restoreGeneration(ctx context.Context, room *model.Room) error
 		return err
 	}
 	worldMatches := tombstone.World == nil && room.World == nil || tombstone.World != nil && room.World != nil && *tombstone.World == *room.World
-	if tombstone.Kind != room.Kind || tombstone.SHA != room.SHA || tombstone.Loader != room.Loader || !worldMatches {
+	identityMatches := tombstone.SHA == room.SHA
+	if room.Kind == "pr" {
+		identityMatches = tombstone.PullNumber != nil && room.PullNumber != nil && *tombstone.PullNumber == *room.PullNumber
+	}
+	if tombstone.Kind != room.Kind || !identityMatches || tombstone.Loader != room.Loader || !worldMatches {
 		return model.Failure("conflict", "房间短 ID 与已经清理的其他房间冲突")
 	}
 	room.Generation = tombstone.Generation
@@ -110,7 +115,10 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 				return model.Failure("conflict", "房间仍有有效租约")
 			}
 		}
-		tombstone := roomTombstone{Kind: room.Kind, SHA: room.SHA, Loader: room.Loader, World: room.World, Generation: room.Generation}
+		if err = m.forgetRoute(ctx, room); err != nil {
+			return err
+		}
+		tombstone := roomTombstone{Kind: room.Kind, SHA: room.SHA, Loader: room.Loader, World: room.World, PullNumber: room.PullNumber, Generation: room.Generation}
 		var previous roomTombstone
 		if err = tx.Get(ctx, "room_tombstone", id, &previous); err == nil {
 			if previous.Generation > tombstone.Generation {
@@ -161,7 +169,7 @@ func (m *Manager) pruneClosed(ctx context.Context, now time.Time) error {
 		}
 		cutoff := now.Add(-30 * 24 * time.Hour)
 		for _, room := range rooms {
-			if room.Kind != "commit" && room.Kind != "world" || room.State != "closed" || room.ClosedAt == nil || !room.ClosedAt.Before(cutoff) || protected[room.ID] {
+			if room.Kind != "commit" && room.Kind != "world" && room.Kind != "pr" || room.State != "closed" || room.ClosedAt == nil || !room.ClosedAt.Before(cutoff) || protected[room.ID] {
 				continue
 			}
 			var runtime Runtime
@@ -171,7 +179,17 @@ func (m *Manager) pruneClosed(ctx context.Context, now time.Time) error {
 			if runtime.WorldExists || runtime.Restart {
 				continue
 			}
-			tombstone := roomTombstone{Kind: room.Kind, SHA: room.SHA, Loader: room.Loader, World: room.World, Generation: room.Generation}
+			leased := false
+			for _, lease := range leases {
+				leased = leased || lease.RoomID == room.ID && lease.ExpiresAt.After(now)
+			}
+			if leased {
+				continue
+			}
+			if err = m.forgetRoute(ctx, room); err != nil {
+				return err
+			}
+			tombstone := roomTombstone{Kind: room.Kind, SHA: room.SHA, Loader: room.Loader, World: room.World, PullNumber: room.PullNumber, Generation: room.Generation}
 			var previous roomTombstone
 			if err = tx.Get(ctx, "room_tombstone", room.ID, &previous); err == nil {
 				if previous.Generation > tombstone.Generation {

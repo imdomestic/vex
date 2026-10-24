@@ -40,7 +40,7 @@ func TestArchivePathBoundaries(t *testing.T) {
 			t.Errorf("accepted unsafe relative path %q", value)
 		}
 	}
-	if !safeRelative("assets/plaza/1/world.tar.gz") {
+	if !safeRelative("assets/spawn/1/world.tar.gz") {
 		t.Fatal("valid relative archive rejected")
 	}
 	for _, value := range []string{"tank", "-host:/path", "tank:relative", "tank:/root/../outside", "tank:/root\nnext"} {

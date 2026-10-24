@@ -155,7 +155,7 @@ func TestRequestSerializesAttemptsAndResetsMetadata(t *testing.T) {
 	_, _, err = m.Request(ctx, "--all", "fabric", false)
 	requireCode(t, err, "invalid_request")
 	_, _, err = m.Request(ctx, strings.Repeat("0", 40), "fabric", false)
-	requireCode(t, err, "not_found")
+	requireCode(t, err, "commit_unavailable")
 	_, _, err = m.Request(ctx, commits[0], "neoforge", false)
 	requireCode(t, err, "invalid_request")
 }
@@ -212,7 +212,7 @@ func TestReadyReferencesAndLRUKeepPermanentAttempts(t *testing.T) {
 	}
 }
 
-func TestWorkerRecordsRealCheckoutFailureAndReleasesLock(t *testing.T) {
+func TestWorkerRecordsManifestFailureAndReleasesLock(t *testing.T) {
 	m, commits := realManager(t)
 	ctx := context.Background()
 	value, _, err := m.Request(ctx, commits[0], "fabric", false)
@@ -220,10 +220,10 @@ func TestWorkerRecordsRealCheckoutFailureAndReleasesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = m.Process(ctx, value.ID); err == nil {
-		t.Fatal("commit without gradle.properties was accepted")
+		t.Fatal("commit without vex.toml was accepted")
 	}
 	failed, err := m.Get(ctx, value.ID)
-	if err != nil || failed.Status != "failed" || failed.LastError == nil || failed.LastError.Code != "build_failed" || failed.FinishedAt == nil || failed.StartedAt == nil {
+	if err != nil || failed.Status != "failed" || failed.LastError == nil || failed.LastError.Code != "build_failed" || failed.FinishedAt == nil || failed.StartedAt != nil {
 		t.Fatalf("worker failure: %+v %v", failed, err)
 	}
 	if _, err = os.Stat(filepath.Join(m.workDir(value), "source")); !errors.Is(err, os.ErrNotExist) {
@@ -309,7 +309,7 @@ func TestRetryUsesIndependentCheckoutAfterInterruptedCleanup(t *testing.T) {
 	if err != nil || !created || next.Attempt != 2 || m.workDir(next) == m.workDir(value) {
 		t.Fatalf("retry workspace: %+v %v %v", next, created, err)
 	}
-	if err = m.Process(ctx, next.ID); err == nil || !strings.Contains(err.Error(), "gradle.properties") || strings.Contains(err.Error(), "already exists") {
+	if err = m.Process(ctx, next.ID); err == nil || !strings.Contains(err.Error(), "vex.toml") || strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("retry did not reach the actual checkout: %v", err)
 	}
 	if contents, err := os.ReadFile(filepath.Join(oldSource, "data.txt")); err != nil || string(contents) != "initial content" {

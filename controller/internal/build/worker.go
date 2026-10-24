@@ -9,15 +9,13 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"time"
 
-	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/manifest"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
 	"github.com/imdomestic/vex/controller/internal/worldarchive"
-	"github.com/magiconair/properties"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,6 +33,9 @@ func (m *Manager) Process(ctx context.Context, id string) error {
 		return err
 	}
 	if value.Status != "queued" && value.Status != "building" {
+		return nil
+	}
+	if value.Source.Kind == "ci" {
 		return nil
 	}
 	err = m.execute(ctx, value)
@@ -125,11 +126,20 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 			return err
 		}
 	}
-	loader, exists := m.cfg.Loaders[value.Loader]
-	if !exists || !loader.Enabled {
+	configured, exists := m.cfg.Loaders[value.Loader]
+	if !exists || !configured.Enabled {
 		return model.Failure("invalid_request", "loader is disabled")
 	}
-	if !filepath.IsAbs(m.cfg.Build.JDKHome) {
+	doc, err := m.commitManifest(ctx, value.SHA)
+	if err != nil {
+		return err
+	}
+	loader, exists := doc.Loaders[value.Loader]
+	if !exists || len(loader.Build) == 0 {
+		return fmt.Errorf("manifest requires the selected loader and a host build command")
+	}
+	runtime, exists := m.cfg.Runtimes[fmt.Sprintf("java%d", doc.Minecraft.Java)]
+	if !exists || !filepath.IsAbs(runtime.JDKHome) {
 		return fmt.Errorf("build jdk_home must be absolute")
 	}
 	if !resume {
@@ -186,35 +196,13 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 		}
 	}
 	checkoutOwned = true
-	props, err := properties.LoadFile(filepath.Join(worktree, "gradle.properties"), properties.UTF8)
-	if err != nil {
-		return err
-	}
-	minecraft, ok := props.Get("minecraft_version")
-	if !ok || minecraft == "" {
-		return fmt.Errorf("gradle.properties requires minecraft_version")
-	}
-	loaderVersion, ok := props.Get(loader.LoaderVersionProperty)
-	if !ok || loaderVersion == "" {
-		return fmt.Errorf("gradle.properties requires %s", loader.LoaderVersionProperty)
-	}
-	javaValue, ok := props.Get("java_version")
-	if !ok {
-		return fmt.Errorf("gradle.properties requires java_version")
-	}
-	java, err := strconv.Atoi(javaValue)
-	if err != nil {
-		return err
-	}
-	if minecraft != m.cfg.Minecraft.Version || java != m.cfg.Minecraft.Java {
-		return fmt.Errorf("commit targets Minecraft %s / Java %d, expected %s / %d", minecraft, java, m.cfg.Minecraft.Version, m.cfg.Minecraft.Java)
-	}
+	minecraft, loaderVersion, java := doc.Minecraft.Version, loader.LoaderVersion, doc.Minecraft.Java
 	value.Minecraft, value.LoaderVersion, value.Java = &minecraft, &loaderVersion, &java
 	if err = m.saveAttempt(ctx, value); err != nil {
 		return err
 	}
 	if !resume {
-		if err = m.prepareJob(value, loader, worktree); err != nil {
+		if err = m.prepareJob(value, doc, runtime.JDKHome, worktree); err != nil {
 			return err
 		}
 	}
@@ -235,98 +223,27 @@ func (m *Manager) execute(ctx context.Context, value model.Build) (resultErr err
 		return err
 	}
 	workerLogCopied = true
-	artifact, err := artifactPath(worktree, loader)
+	stage, err := os.MkdirTemp(filepath.Join(m.cfg.DataDir, ".work"), "host-import-")
 	if err != nil {
 		return err
 	}
-	artifactName := filepath.Base(artifact)
-	if artifactName == "build.log" || artifactName == "manifest.json" {
-		return fmt.Errorf("invalid artifact filename")
-	}
-	if err = copyFile(artifact, filepath.Join(outputDir, artifactName)); err != nil {
-		return err
-	}
-	entry, err := m.buildFile(filepath.Join(outputDir, artifactName), value, "both")
+	defer os.RemoveAll(stage)
+	extracted := filepath.Join(stage, "contents")
+	bundle, err := UnpackBundle(filepath.Join(m.workDir(value), ".work", "bundle.zip"), extracted)
 	if err != nil {
 		return err
 	}
-	value.Files = []model.BuildFile{entry}
-	ids, err := JarModIDs(artifact, value.Loader)
-	if err != nil {
+	selected := bundle.LoaderBuilds()
+	if len(selected) != 1 || selected[0].Loader != value.Loader {
+		return fmt.Errorf("worker bundle differs from the commit manifest")
+	}
+	if err = bundle.validateManifest(doc, false); err != nil {
 		return err
 	}
-	uniqueIDs := map[string]bool{}
-	for _, id := range ids {
-		uniqueIDs[id] = true
-	}
-	names := map[string]bool{artifactName: true}
-	for _, dep := range loader.Deps {
-		dependency, path, err := m.dependency(ctx, props, dep, value.Loader)
-		if err != nil {
-			return err
-		}
-		if names[dependency.Name] {
-			return fmt.Errorf("duplicate manifest filename %s", dependency.Name)
-		}
-		names[dependency.Name] = true
-		if err = copyFile(path, filepath.Join(outputDir, dependency.Name)); err != nil {
-			return err
-		}
-		entry, err := m.buildFile(filepath.Join(outputDir, dependency.Name), value, dependency.Side)
-		if err != nil {
-			return err
-		}
-		value.Files = append(value.Files, entry)
-		ids, err := JarModIDs(path, value.Loader)
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			uniqueIDs[id] = true
-		}
-	}
-	if loader.Agent != "" {
-		agent, source, err := m.agentArtifact(value)
-		if err != nil {
-			return err
-		}
-		if agent != nil {
-			if names[agent.Name] {
-				return fmt.Errorf("duplicate manifest filename %s", agent.Name)
-			}
-			if err = copyFile(source, filepath.Join(outputDir, agent.Name)); err != nil {
-				return err
-			}
-			copied, err := m.buildFile(filepath.Join(outputDir, agent.Name), value, "server")
-			if err != nil {
-				return err
-			}
-			if copied.SHA256 != agent.SHA256 || copied.Size != agent.Size {
-				return fmt.Errorf("agent artifact changed during publication")
-			}
-			value.Files = append(value.Files, copied)
-			ids, err := JarModIDs(source, value.Loader)
-			if err != nil {
-				return err
-			}
-			for _, id := range ids {
-				uniqueIDs[id] = true
-			}
-		}
-	}
-	value.ModIDs = make([]string, 0, len(uniqueIDs))
-	for id := range uniqueIDs {
-		value.ModIDs = append(value.ModIDs, id)
-	}
-	sort.Strings(value.ModIDs)
 	finished := time.Now().UTC()
 	duration := finished.Sub(*value.StartedAt).Seconds()
 	value.Status, value.FinishedAt, value.BuiltAt, value.DurationSec = "ready", &finished, &finished, &duration
-	manifest, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err = os.WriteFile(filepath.Join(outputDir, "manifest.json"), append(manifest, '\n'), 0640); err != nil {
+	if err = m.publishFiles(&value, doc, selected[0], extracted); err != nil {
 		return err
 	}
 	if err = log.Sync(); err != nil {
@@ -362,15 +279,20 @@ func (m *Manager) stopWorker(ctx context.Context, value model.Build) error {
 	return stopErr
 }
 
-func (m *Manager) prepareJob(value model.Build, loader config.Loader, worktree string) error {
+func (m *Manager) workerJob(value model.Build, doc manifest.Document, jdkHome, worktree string) (Job, error) {
 	job := Job{
-		Version: 1, Project: m.cfg.ID, BuildID: value.ID, Attempt: value.Attempt,
+		Version: 2, Project: m.cfg.ID, BuildID: value.ID, Attempt: value.Attempt,
 		Worktree: worktree, TempDir: filepath.Join(m.workDir(value), ".work"),
-		GradleHome: filepath.Join(m.cfg.DataDir, "cache", "gradle"), JDKHome: m.cfg.Build.JDKHome,
-		Task: loader.GradleTask, GradleArgs: m.cfg.Build.GradleArgs, Timeout: m.cfg.Build.Timeout,
+		GradleHome: filepath.Join(m.cfg.DataDir, "cache", "gradle"), JDKHome: jdkHome,
+		Manifest: doc, Loader: value.Loader, Timeout: m.cfg.Build.Timeout,
 		LockFile: m.cfg.Build.LockFile,
 	}
-	if err := job.validate(m.jobPath(value)); err != nil {
+	return job, job.validate(m.jobPath(value))
+}
+
+func (m *Manager) prepareJob(value model.Build, doc manifest.Document, jdkHome, worktree string) error {
+	job, err := m.workerJob(value, doc, jdkHome, worktree)
+	if err != nil {
 		return err
 	}
 	for _, directory := range []string{job.TempDir, job.GradleHome, filepath.Dir(m.jobPath(value))} {

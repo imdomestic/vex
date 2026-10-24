@@ -4,59 +4,34 @@ package rooms
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/imdomestic/vex/controller/internal/config"
 	"github.com/imdomestic/vex/controller/internal/model"
 	"github.com/imdomestic/vex/controller/internal/store"
+	"github.com/imdomestic/vex/controller/internal/testfixture"
+	"github.com/imdomestic/vex/controller/internal/testproject"
 	"github.com/imdomestic/vex/controller/internal/worlds"
 )
 
 func TestRealWorldDestinationDistinguishesAvailableAndRegisteredRoom(t *testing.T) {
-	archive, metadataPath, manifestPath, scanner := os.Getenv("VEX_IT_WORLD_ARCHIVE"), os.Getenv("VEX_IT_WORLD_METADATA"), os.Getenv("VEX_IT_BUILD"), os.Getenv("VEX_IT_SCANNER")
-	if archive == "" || metadataPath == "" || manifestPath == "" || scanner == "" {
-		t.Skip("requires real published plaza metadata/archive, ready build manifest and scanner")
+	scanner := os.Getenv("VEX_IT_SCANNER")
+	if scanner == "" {
+		t.Skip("requires the Vex world scanner")
 	}
-	metadataBytes, err := os.ReadFile(metadataPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var metadata model.WorldMetadata
-	if err = json.Unmarshal(metadataBytes, &metadata); err != nil {
-		t.Fatal(err)
-	}
-	manifestBytes, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var build model.Build
-	if err = json.Unmarshal(manifestBytes, &build); err != nil {
-		t.Fatal(err)
-	}
-	if build.Status != "ready" || build.Minecraft == nil {
-		t.Fatal("requires a real ready build")
-	}
-	root := t.TempDir()
-	db, err := store.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	db, err = db.WithProject("world-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.ProjectConfig{ID: "world-test", DataDir: filepath.Join(root, "data"), Minecraft: config.ProjectMinecraft{Target: config.Target{Version: *build.Minecraft}}, Worlds: config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}}
+	fixture := testproject.NewFixture(t, "world-test")
+	build, cfg, db := fixture.Build, fixture.Config, fixture.DB
+	cfg.Worlds = config.EffectiveWorlds{Worlds: config.Worlds{ScannerFile: scanner}}
 	worldManager, err := worlds.New(cfg, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, _, err = worldManager.Publish(ctx, metadata, archive); err != nil {
+	metadata := model.WorldMetadata{ID: "fixture", Title: "Vex 固定测试世界", Minecraft: *build.Minecraft, Requires: model.Requirements{Loaders: []string{build.Loader}, Mods: []string{}}, Source: model.Source{Scale: 1}}
+	policy := worlds.ManifestPolicy{SHA: build.SHA, Document: *build.Manifest, Commit: build.Commit}
+	if _, _, err = worldManager.Publish(ctx, metadata, testfixture.File(t, "world-26.3.tar.gz"), policy); err != nil {
 		t.Fatal(err)
 	}
 	world, err := worldManager.Get(ctx, metadata.ID)

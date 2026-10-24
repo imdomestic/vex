@@ -161,12 +161,12 @@ func (m *Manager) OpenPack(ctx context.Context, id, revision string) (*os.File, 
 	return file, err
 }
 
-func (m *Manager) metadata(value model.WorldMetadata) (model.WorldMetadata, error) {
+func (m *Manager) metadata(value model.WorldMetadata, policy ManifestPolicy) (model.WorldMetadata, error) {
 	if !config.ValidID(value.ID) || strings.TrimSpace(value.Title) == "" {
 		return value, model.Failure("invalid_request", "world ID or title is invalid")
 	}
-	if value.Minecraft != m.cfg.Minecraft.Version {
-		return value, model.Failure("invalid_request", "world Minecraft version differs from the project")
+	if value.Minecraft != policy.Document.Minecraft.Version {
+		return value, model.Failure("invalid_request", "world Minecraft version differs from the authoritative manifest")
 	}
 	if value.Source.Scale == 0 {
 		value.Source.Scale = 1
@@ -183,6 +183,9 @@ func (m *Manager) metadata(value model.WorldMetadata) (model.WorldMetadata, erro
 	for _, loader := range value.Requires.Loaders {
 		if configured, ok := m.cfg.Loaders[loader]; !ok || !configured.Enabled {
 			return value, model.Failure("invalid_request", "world loader is not enabled in this project")
+		}
+		if _, ok := policy.Document.Loaders[loader]; !ok {
+			return value, model.Failure("invalid_request", "world loader is absent from the authoritative manifest")
 		}
 	}
 	value.Requires.Namespaces = append([]string{}, value.Requires.Namespaces...)

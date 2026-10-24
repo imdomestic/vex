@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "minecraft", "loaders"],
+  "properties": {
+    "schema": { "const": 1 },
+    "minecraft": {
+      "type": "object", "additionalProperties": false, "required": ["version", "java"],
+      "properties": { "version": { "$ref": "#/definitions/version" }, "java": { "type": "integer", "minimum": 8, "maximum": 99 } }
+    },
+    "loaders": {
+      "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 2,
+      "properties": { "fabric": { "$ref": "#/definitions/loader" }, "neoforge": { "$ref": "#/definitions/loader" } }
+    },
+    "world": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": { "extra_root_entries": { "type": "array", "default": [], "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/definitions/filename" } } }
+    },
+    "rooms": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": { "memory": { "type": "string", "pattern": "^([1-9][0-9]*[MG])?$" } }
+    }
+  },
+  "definitions": {
+    "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+\\-]{0,127}$" },
+    "filename": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+\\-]{0,199}$" },
+    "side": { "enum": ["client", "server", "both"] },
+    "glob": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "loader": {
+      "type": "object", "additionalProperties": false, "required": ["loader_version", "files"],
+      "properties": {
+        "loader_version": { "$ref": "#/definitions/version" },
+        "agent": { "type": "boolean", "default": false },
+        "build": { "type": "array", "default": [], "maxItems": 128, "items": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$" } },
+        "files": { "type": "array", "minItems": 1, "maxItems": 128, "items": {
+          "type": "object", "additionalProperties": false, "required": ["glob", "side"],
+          "properties": {
+            "glob": { "$ref": "#/definitions/glob" },
+            "exclude": { "type": "array", "default": [], "maxItems": 128, "items": { "$ref": "#/definitions/glob" } },
+            "side": { "$ref": "#/definitions/side" }
+          }
+        } },
+        "deps": { "type": "array", "default": [], "maxItems": 512, "items": {
+          "type": "object", "additionalProperties": false, "required": ["url", "sha1", "sha512", "side"],
+          "properties": {
+            "url": { "type": "string", "maxLength": 4096 },
+            "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "sha512": { "type": "string", "pattern": "^[0-9a-f]{128}$" },
+            "side": { "$ref": "#/definitions/side" }
+          }
+        } }
+      }
+    }
+  }
+}

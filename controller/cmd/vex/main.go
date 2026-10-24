@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -43,6 +44,8 @@ type requestPlan struct {
 	Path   string
 	Body   any
 	Upload *streamUpload
+	// Confirm 非空时，发送请求前要求用户输入同样的文字，并把输入写入请求体的 confirm 字段。
+	Confirm string
 }
 
 func globals(args ...string) *pflag.FlagSet {
@@ -91,7 +94,7 @@ func resolveClient(global *pflag.FlagSet) (config.Resolved[config.Client], error
 	return config.LoadClient(config.Options{Args: args})
 }
 
-const usage = "usage: vex [--config FILE] [--server NAME] [-p PROJECT] login|logout|whoami|user|auth|config|health|meta|me|projects|nodes|git|builds|rooms|snapshots|world|pack|request"
+const usage = "usage: vex [--config FILE] [--server NAME] [-p PROJECT] login|logout|whoami|user|auth|github|config|health|meta|me|projects|nodes|git|builds|rooms|room|snapshots|world|pack|request"
 
 func run(ctx context.Context, args []string, output io.Writer) error {
 	return runWithInput(ctx, args, os.Stdin, output)
@@ -114,6 +117,9 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 	}
 	if args[0] == "login" || args[0] == "logout" || args[0] == "whoami" || args[0] == "auth" || args[0] == "user" {
 		return loginCommand(ctx, global, args, input, output)
+	}
+	if args[0] == "github" {
+		return githubCommand(ctx, global, args[1:], output)
 	}
 	if args[0] == "config" {
 		if len(args) < 2 || (args[1] != "show" && args[1] != "check") {
@@ -142,9 +148,26 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 		_, err = output.Write(data)
 		return err
 	}
+	if args[0] == "room" {
+		args[0] = "rooms"
+	}
 	plan, resolved, err := planCommand(ctx, global, args)
 	if err != nil {
 		return err
+	}
+	if plan.Confirm != "" {
+		if _, err = fmt.Fprintf(output, "重置房间 %s 的世界会删除当前世界卷。请输入房间 ID 确认：", plan.Confirm); err != nil {
+			return err
+		}
+		line, err := bufio.NewReader(input).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		typed := strings.TrimRight(line, "\r\n")
+		if typed != plan.Confirm {
+			return fmt.Errorf("输入与房间 ID 不一致，没有执行重置")
+		}
+		plan.Body.(map[string]string)["confirm"] = typed
 	}
 	if plan.Upload != nil {
 		defer func() { resultErr = errors.Join(resultErr, plan.Upload.Close()) }()

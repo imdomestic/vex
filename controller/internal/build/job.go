@@ -14,22 +14,23 @@ import (
 	"time"
 
 	"github.com/imdomestic/vex/controller/internal/config"
+	"github.com/imdomestic/vex/controller/internal/manifest"
 	"golang.org/x/sys/unix"
 )
 
 type Job struct {
-	Version    int      `json:"version"`
-	Project    string   `json:"project"`
-	BuildID    string   `json:"buildId"`
-	Attempt    int      `json:"attempt"`
-	Worktree   string   `json:"worktree"`
-	TempDir    string   `json:"tempDir"`
-	GradleHome string   `json:"gradleHome"`
-	JDKHome    string   `json:"jdkHome"`
-	Task       string   `json:"task"`
-	GradleArgs []string `json:"gradleArgs"`
-	Timeout    string   `json:"timeout"`
-	LockFile   string   `json:"lockFile"`
+	Version    int               `json:"version"`
+	Project    string            `json:"project"`
+	BuildID    string            `json:"buildId"`
+	Attempt    int               `json:"attempt"`
+	Worktree   string            `json:"worktree"`
+	TempDir    string            `json:"tempDir"`
+	GradleHome string            `json:"gradleHome"`
+	JDKHome    string            `json:"jdkHome"`
+	Manifest   manifest.Document `json:"manifest"`
+	Loader     string            `json:"loader"`
+	Timeout    string            `json:"timeout"`
+	LockFile   string            `json:"lockFile"`
 }
 
 func readJob(path string) (Job, error) {
@@ -38,8 +39,8 @@ func readJob(path string) (Job, error) {
 	if err != nil {
 		return job, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > 64*1024 {
-		return job, fmt.Errorf("worker job must be a regular JSON file no larger than 64 KiB")
+	if !info.Mode().IsRegular() || info.Size() > MaxBundleJSON {
+		return job, fmt.Errorf("worker job must be a regular JSON file no larger than 4 MiB")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -59,7 +60,7 @@ func readJob(path string) (Job, error) {
 }
 
 func (j Job) validate(path string) error {
-	if j.Version != 1 || !config.ValidID(j.Project) || !buildIDPattern.MatchString(j.BuildID) || j.Attempt < 1 {
+	if j.Version != 2 || !config.ValidID(j.Project) || !buildIDPattern.MatchString(j.BuildID) || j.Attempt < 1 {
 		return fmt.Errorf("invalid worker job identity")
 	}
 	if !filepath.IsAbs(path) || filepath.Base(path) != j.Project+"--"+j.BuildID+".json" || filepath.Base(filepath.Dir(path)) != "jobs" {
@@ -71,8 +72,15 @@ func (j Job) validate(path string) error {
 	if j.Worktree != filepath.Join(work, "source") || j.TempDir != filepath.Join(work, ".work") || j.GradleHome != filepath.Join(project, "cache", "gradle") {
 		return fmt.Errorf("worker paths must belong to the selected project")
 	}
-	if !filepath.IsAbs(j.JDKHome) || !filepath.IsAbs(j.LockFile) || j.Task == "" || strings.HasPrefix(j.Task, "-") || strings.ContainsAny(j.Task, "\x00\r\n") {
+	if !filepath.IsAbs(j.JDKHome) || !filepath.IsAbs(j.LockFile) {
 		return fmt.Errorf("invalid worker Java, lock or Gradle task configuration")
+	}
+	if err := manifest.Validate(j.Manifest, manifest.Policy{}); err != nil {
+		return err
+	}
+	loader, exists := j.Manifest.Loaders[j.Loader]
+	if !exists || len(loader.Build) == 0 || strings.HasPrefix(loader.Build[0], "-") || !strings.HasPrefix(j.BuildID, j.Loader+"-") {
+		return fmt.Errorf("worker job requires a matching loader and build command")
 	}
 	duration, err := time.ParseDuration(j.Timeout)
 	if err != nil || duration <= 0 {
@@ -110,13 +118,14 @@ func Worker(ctx context.Context, jobPath string) (resultErr error) {
 		return err
 	}
 	defer log.Close()
-	args := []string{"./gradlew", job.Task}
-	args = append(args, job.GradleArgs...)
-	args = append(args, "--console=plain", "--no-daemon", "--max-workers=2",
-		"-Dorg.gradle.jvmargs=-Xmx1536m -XX:ActiveProcessorCount=2 -Djava.io.tmpdir="+job.TempDir,
-		"-Porg.gradle.java.installations.paths="+job.JDKHome,
-		"-Porg.gradle.java.installations.auto-download=false")
-	command := exec.CommandContext(workerCtx, "bash", args...)
+	args := append([]string{}, job.Manifest.Loaders[job.Loader].Build...)
+	if filepath.Base(args[0]) == "gradlew" || filepath.Base(args[0]) == "gradle" {
+		args = append(args, "--console=plain", "--no-daemon", "--max-workers=2",
+			"-Dorg.gradle.jvmargs=-Xmx1536m -XX:ActiveProcessorCount=2 -Djava.io.tmpdir="+job.TempDir,
+			"-Porg.gradle.java.installations.paths="+job.JDKHome,
+			"-Porg.gradle.java.installations.auto-download=false")
+	}
+	command := exec.CommandContext(workerCtx, args[0], args[1:]...)
 	command.Dir = job.Worktree
 	command.Env = []string{
 		"CI=true",
@@ -142,7 +151,15 @@ func Worker(ctx context.Context, jobPath string) (resultErr error) {
 		return err
 	}
 	if err = command.Run(); err != nil {
-		return fmt.Errorf("Gradle failed: %w", err)
+		return fmt.Errorf("manifest build command failed: %w", err)
+	}
+	bundleDir := filepath.Join(job.TempDir, "bundle")
+	bundle, err := CollectBundle(workerCtx, job.Manifest, job.Worktree, bundleDir, []string{job.Loader})
+	if err != nil {
+		return err
+	}
+	if err = WriteBundleZIP(bundle, bundleDir, filepath.Join(job.TempDir, "bundle.zip")); err != nil {
+		return err
 	}
 	return log.Sync()
 }

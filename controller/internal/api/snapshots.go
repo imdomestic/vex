@@ -78,6 +78,13 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 	if r.Header.Get("Content-Type") != "application/gzip" {
 		return model.Failure("invalid_request", "快照必须使用 application/gzip")
 	}
+	build, err := s.Builds.Get(r.Context(), id.BuildID)
+	if err != nil {
+		return err
+	}
+	if build.Minecraft == nil || build.Status != "ready" {
+		return model.Failure("conflict", "快照所属构建未准备完成")
+	}
 	if err = worldarchive.Space(s.Cfg.DataDir); err != nil {
 		return model.Failure("archive_failed", err.Error())
 	}
@@ -102,7 +109,7 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = worldarchive.Validate(f.Name(), s.Cfg.Minecraft.Version, s.Cfg.Worlds.ExtraRootEntries...); err != nil {
+	if err = worldarchive.Validate(f.Name(), *build.Minecraft, build.WorldExtraRootEntries...); err != nil {
 		return model.Failure("invalid_request", err.Error())
 	}
 	hashes, err := filehash.File(f.Name())
@@ -110,7 +117,9 @@ func (s *Server) snapshotUpload(w http.ResponseWriter, r *http.Request, id auth.
 		return err
 	}
 	snapshotID := fmt.Sprintf("%s-g%d", id.RoomID, id.Generation)
-	snapshot := model.Snapshot{Project: s.Cfg.ID, ID: snapshotID, Path: filepath.ToSlash(filepath.Join("snapshots", id.RoomID, snapshotID+".tar.gz")), RoomID: id.RoomID, RoomGeneration: id.Generation, BuildID: id.BuildID, Minecraft: s.Cfg.Minecraft.Version, SHA256: hashes.SHA256, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Size: hashes.Size, CreatedAt: time.Now().UTC(), LocalAvailable: true}
+	snapshot := model.Snapshot{Project: s.Cfg.ID, ID: snapshotID, Path: filepath.ToSlash(filepath.Join("snapshots", id.RoomID, snapshotID+".tar.gz")), RoomID: id.RoomID, RoomGeneration: id.Generation, BuildID: id.BuildID, Minecraft: *build.Minecraft, SHA256: hashes.SHA256, SHA1: hashes.SHA1, SHA512: hashes.SHA512, Size: hashes.Size, CreatedAt: time.Now().UTC(), LocalAvailable: true}
+	snapshot.ManifestSHA, snapshot.WorldExtraRootEntries = build.SHA, append([]string{}, build.WorldExtraRootEntries...)
+	snapshot.Commit, snapshot.Manifest, snapshot.CommitMissingAt = build.Commit, build.Manifest, build.CommitMissingAt
 	snapshot, created, err := s.Rooms.PublishSnapshot(r.Context(), snapshot, f.Name())
 	if err != nil {
 		return err

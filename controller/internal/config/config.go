@@ -18,6 +18,8 @@ type Config struct {
 	Agents    map[string]Agent       `toml:"agents"`
 	Archive   Archive                `toml:"archive"`
 	Auth      Auth                   `toml:"auth"`
+	GitHub    GitHub                 `toml:"github"`
+	Wake      Wake                   `toml:"wake"`
 	Users     map[string]User        `toml:"users"`
 	Projects  map[string]Project     `toml:"projects"`
 	Build     Build                  `toml:"build"`
@@ -26,13 +28,34 @@ type Config struct {
 }
 
 type Server struct {
-	Name            string   `toml:"name"`
-	Listen          []string `toml:"listen"`
-	PublicBaseURL   string   `toml:"public_base_url"`
-	InternalBaseURL string   `toml:"internal_base_url"`
-	DataDir         string   `toml:"data_dir"`
-	Zone            string   `toml:"zone"`
-	RouterAddress   string   `toml:"router_address"`
+	Name            string     `toml:"name"`
+	Listen          []string   `toml:"listen"`
+	Listeners       []Listener `toml:"listeners"`
+	TLSCertFile     string     `toml:"tls_cert_file"`
+	TLSKeyFile      string     `toml:"tls_key_file"`
+	PublicBaseURL   string     `toml:"public_base_url"`
+	InternalBaseURL string     `toml:"internal_base_url"`
+	DataDir         string     `toml:"data_dir"`
+	Zone            string     `toml:"zone"`
+	RouterAddress   string     `toml:"router_address"`
+	WakeListen      string     `toml:"wake_listen"`
+}
+
+type Listener struct {
+	Address string `toml:"address"`
+	TLS     bool   `toml:"tls"`
+	Scope   string `toml:"scope"`
+}
+
+func (s Server) Endpoints() []Listener {
+	if len(s.Listeners) != 0 {
+		return s.Listeners
+	}
+	result := make([]Listener, 0, len(s.Listen))
+	for _, address := range s.Listen {
+		result = append(result, Listener{Address: address, TLS: s.TLSCertFile != "", Scope: "public"})
+	}
+	return result
 }
 
 type Minecraft struct {
@@ -86,10 +109,30 @@ type RsyncSSH struct {
 	BWLimit        string `toml:"bwlimit"`
 }
 type Auth struct {
-	SigningKeyFile string `toml:"signing_key_file"`
-	SessionTTL     string `toml:"session_ttl"`
-	InviteTTL      string `toml:"invite_ttl"`
-	AdminSocket    string `toml:"admin_socket"`
+	SigningKeyFile string                  `toml:"signing_key_file"`
+	SessionTTL     string                  `toml:"session_ttl"`
+	InviteTTL      string                  `toml:"invite_ttl"`
+	AdminSocket    string                  `toml:"admin_socket"`
+	Providers      map[string]AuthProvider `toml:"providers"`
+}
+type AuthProvider struct {
+	Type string `toml:"type"`
+}
+type GitHub struct {
+	App GitHubApp `toml:"app"`
+}
+type GitHubApp struct {
+	AppID             int64  `toml:"app_id"`
+	ClientID          string `toml:"client_id"`
+	ClientSecretFile  string `toml:"client_secret_file"`
+	PrivateKeyFile    string `toml:"private_key_file"`
+	WebhookSecretFile string `toml:"webhook_secret_file"`
+}
+type Wake struct {
+	Enabled   bool   `toml:"-"`
+	Listen    string `toml:"-"`
+	Endpoint  string `toml:"-"`
+	RateLimit string `toml:"rate_limit"`
 }
 type User struct {
 	Admin       bool     `toml:"admin"`
@@ -111,17 +154,38 @@ func (r Role) Allows(minimum Role) bool {
 }
 
 type Project struct {
-	Remote        string            `toml:"remote"`
-	DefaultBranch string            `toml:"default_branch"`
-	Trust         string            `toml:"trust"`
-	Git           ProjectGit        `toml:"git"`
-	Minecraft     Target            `toml:"minecraft"`
-	Build         ProjectBuild      `toml:"build"`
-	Loaders       map[string]Loader `toml:"loaders"`
-	Members       map[string]Role   `toml:"members"`
-	Whitelist     []string          `toml:"whitelist"`
-	Quota         Quota             `toml:"quota"`
-	Worlds        ProjectWorlds     `toml:"worlds"`
+	Remote           string            `toml:"remote"`
+	DefaultBranch    string            `toml:"default_branch"`
+	Trust            string            `toml:"trust"`
+	Git              ProjectGit        `toml:"git"`
+	Minecraft        Target            `toml:"minecraft"`
+	Build            ProjectBuild      `toml:"build"`
+	Loaders          map[string]Loader `toml:"loaders"`
+	Members          map[string]Role   `toml:"members"`
+	Whitelist        []string          `toml:"whitelist"`
+	Quota            Quota             `toml:"quota"`
+	ManifestFallback string            `toml:"manifest_fallback"`
+	GitHub           ProjectGitHub     `toml:"github"`
+	CI               ProjectCI         `toml:"ci"`
+	Policy           ProjectPolicy     `toml:"policy"`
+}
+type ProjectGitHub struct {
+	Repository  string `toml:"repository"`
+	DeriveRoles bool   `toml:"derive_roles"`
+}
+type ProjectCI struct {
+	Mode            string `toml:"mode"`
+	Workflow        string `toml:"workflow"`
+	Artifact        string `toml:"artifact"`
+	PollInterval    string `toml:"poll_interval"`
+	PRPreviews      bool   `toml:"pr_previews"`
+	ForkPreviews    string `toml:"fork_previews"`
+	PreviewAccess   string `toml:"preview_access"`
+	CommentLanguage string `toml:"comment_language"`
+	PackLinkTTL     string `toml:"pack_link_ttl"`
+}
+type ProjectPolicy struct {
+	OnNewHead string `toml:"on_new_head"`
 }
 type ProjectGit struct {
 	PollInterval    string `toml:"poll_interval"`
@@ -157,9 +221,6 @@ type Quota struct {
 	SnapshotKeep     int    `toml:"snapshot_keep"`
 	SnapshotKeepDays int    `toml:"snapshot_keep_days"`
 }
-type ProjectWorlds struct {
-	ExtraRootEntries []string `toml:"extra_root_entries"`
-}
 type Build struct {
 	MaxConcurrent int    `toml:"max_concurrent"`
 	LockFile      string `toml:"lock_file"`
@@ -168,6 +229,7 @@ type Idle struct {
 	Commit string `toml:"commit"`
 	Branch string `toml:"branch"`
 	World  string `toml:"world"`
+	PR     string `toml:"pr"`
 }
 type Rooms struct {
 	Idle         Idle   `toml:"idle"`
@@ -255,6 +317,7 @@ type EffectiveRooms struct {
 	JoinLease    string
 	StartTimeout string
 	DefaultSeed  string
+	PRIdle       string
 }
 type EffectiveArchive struct {
 	Archive
@@ -263,26 +326,31 @@ type EffectiveArchive struct {
 }
 type EffectiveWorlds struct {
 	Worlds
-	ProjectWorlds
 }
 type ProjectConfig struct {
-	ID        string
-	Path      string
-	DataDir   string
-	Trust     string
-	Server    Server
-	Git       Git
-	Minecraft ProjectMinecraft
-	Loaders   map[string]Loader
-	Agents    map[string]Agent
-	Build     EffectiveBuild
-	Rooms     EffectiveRooms
-	Archive   EffectiveArchive
-	Worlds    EffectiveWorlds
-	Runtime   Runtime
-	Auth      Auth
-	Members   map[string]Role
-	Quota     Quota
+	ID               string
+	Path             string
+	DataDir          string
+	Trust            string
+	Server           Server
+	Git              Git
+	Minecraft        ProjectMinecraft
+	Loaders          map[string]Loader
+	Agents           map[string]Agent
+	Build            EffectiveBuild
+	Rooms            EffectiveRooms
+	Archive          EffectiveArchive
+	Worlds           EffectiveWorlds
+	Runtime          Runtime
+	Auth             Auth
+	Members          map[string]Role
+	Quota            Quota
+	ManifestFallback string
+	Runtimes         map[string]JavaRuntime
+	GitHub           ProjectGitHub
+	CI               ProjectCI
+	Policy           ProjectPolicy
+	Wake             Wake
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,22}$`)
@@ -297,7 +365,7 @@ func (c Config) ForProject(id string) (ProjectConfig, error) {
 		return ProjectConfig{}, fmt.Errorf("unknown project")
 	}
 	runtime, ok := c.Runtimes[fmt.Sprintf("java%d", p.Minecraft.Java)]
-	if !ok {
+	if !ok && p.Minecraft.Java != 0 {
 		return ProjectConfig{}, fmt.Errorf("project has no configured Java runtime")
 	}
 	whitelist := map[string]bool{}
@@ -320,9 +388,10 @@ func (c Config) ForProject(id string) (ProjectConfig, error) {
 		Minecraft: ProjectMinecraft{p.Minecraft, runtime.ServerImage, c.Server.Zone, c.Minecraft.AcceptEULA, players},
 		Loaders:   p.Loaders, Agents: c.Agents,
 		Build:   EffectiveBuild{c.Build, p.Build, p.Quota.BuildCache, runtime.JDKHome},
-		Rooms:   EffectiveRooms{c.Rooms.Heap, p.Quota.RoomMemoryMax, p.Quota.MaxRooms, c.Rooms.Idle.Commit, c.Rooms.Idle.World, c.Rooms.Idle.Branch, c.Rooms.JoinLease, c.Rooms.StartTimeout, c.Rooms.DefaultSeed},
+		Rooms:   EffectiveRooms{c.Rooms.Heap, p.Quota.RoomMemoryMax, p.Quota.MaxRooms, c.Rooms.Idle.Commit, c.Rooms.Idle.World, c.Rooms.Idle.Branch, c.Rooms.JoinLease, c.Rooms.StartTimeout, c.Rooms.DefaultSeed, c.Rooms.Idle.PR},
 		Archive: EffectiveArchive{c.Archive, p.Quota.SnapshotKeep, p.Quota.SnapshotKeepDays},
-		Worlds:  EffectiveWorlds{c.Worlds, p.Worlds}, Runtime: c.Runtime, Auth: c.Auth, Members: p.Members, Quota: p.Quota,
+		Worlds:  EffectiveWorlds{c.Worlds}, Runtime: c.Runtime, Auth: c.Auth, Members: p.Members, Quota: p.Quota,
+		ManifestFallback: p.ManifestFallback, Runtimes: c.Runtimes, GitHub: p.GitHub, CI: p.CI, Policy: p.Policy, Wake: c.Wake,
 	}, nil
 }
 func (p Project) EnabledLoaders() []string {
