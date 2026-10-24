@@ -52,6 +52,7 @@
 | `room` | 当前项目的有效房间凭据。 |
 | `room-or-viewer` | 项目 viewer 及以上，或满足目标房间/租约检查的房间凭据。 |
 | `download` | 项目 viewer 及以上、当前房间自己的构建凭据，或当前 URL 的有效签名。 |
+| `viewer-download` | 项目 viewer 及以上，或当前 URL 的有效签名；用于 MRPack 下载。 |
 | `developer-download` | 项目 developer 及以上，或当前 URL 的有效签名。 |
 | `seed-download` | 项目 developer 及以上、房间固定种子匹配的房间凭据，或当前 URL 的有效签名。 |
 | `pack-download` | 项目 viewer 及以上，或当前 URL 的有效签名。 |
@@ -59,7 +60,7 @@
 
 房间凭据使用 HMAC-SHA256 签名，包含 `project`、`roomId`、`generation`、`buildId`、`expires`。除检查签名和过期时间，还必须与数据库中当前房间的项目、generation、buildId 匹配，且房间尚未 `closed`。房间凭据访问其他项目或需要用户认证的平台接口返回 404；访问同项目中未授予房间身份的端点返回 403。房间读取目标房间时，目标必须是自身或具有有效 hop 租约；租约必须匹配源房间和源 generation，以及目标 generation。
 
-文件签名通过 `exp`、`sig` 查询参数传递，覆盖 GET 方法、URL 转义后的完整路径和到期时间，只在四种下载权限的路由有效。下载授权不会授予其他 API 权限。房间凭据不能下载任意项目构建或任意世界种子；快照和资源包使用已签名 URL 注入服务器。
+文件签名通过 `exp`、`sig` 查询参数传递，覆盖 GET 方法、URL 转义后的完整路径和到期时间，只在表中的下载权限路由有效。下载授权不会授予其他 API 权限。房间凭据不能下载任意项目构建或任意世界种子；快照和资源包使用已签名 URL 注入服务器。
 
 ## 端点
 
@@ -107,7 +108,7 @@ Unix 管理接口为 POST `/v2/auth/invites`（必须指定 user）、GET `/v2/a
 
 `status` 允许 `queued/building/ready/failed`，`loader` 必须在项目内启用。列表按 `queuedAt` 降序，同时间按 ID 升序。Build ID 为 `<loader>-<sha12>`；完整 SHA 不同而短 ID 相同时返回 409 `conflict`。
 
-构建来源固定为 `{kind:"host"}`；只有 `trust="trusted"` 且 `build.source="host"` 的项目可以提交构建，否则返回 `sandbox_unavailable`。`force` 默认 false：已存在的记录直接返回；queued/building 即使 force 也保持原任务。failed 可以显式 force 重建；ready 只有在没有未关闭房间引用时可以 force，受引用保护时返回 `conflict`。每个真正新建的执行尝试增加 `attempt`，Build ID 保持不变。
+POST 构建端点创建 `{kind:"host"}` 来源；只有 `trust="trusted"` 且 `build.source="host"` 的项目可以提交此请求，否则返回 `sandbox_unavailable`。CI pull 导入的构建使用 `{kind:"ci",…}`，包含 GitHub run 身份，见“P2 构建与房间包”。`force` 默认 false：已存在的记录直接返回；queued/building 即使 force 也保持原任务。failed 可以显式 force 重建；ready 只有在没有未关闭房间引用时可以 force，受引用保护时返回 `conflict`。每个真正新建的执行尝试增加 `attempt`，Build ID 保持不变。
 
 构建产物、解析的依赖和配置的 agent 全部出现在 `Build.files`。客户端下载 `side=both/client` 的文件；服务端注入 `side=both/server` 的文件。全部文件采用构建文件端点下载，manifest 提供三个摘要和字节长度。`modIds` 从模组元数据读取，用于世界兼容性检查。
 
@@ -147,7 +148,7 @@ Unix 管理接口为 POST `/v2/auth/invites`（必须指定 user）、GET `/v2/a
 
 stop 对 stopped/closed 房间返回 200；其他状态进入停止流程，返回 202。restart 在停止后开始新周期；stopped/closed 可以直接进入启动流程。lost 无法明确世界状态，stop/restart 返回 `node_lost`。label=finished 会取消自动重启并进入关闭流程；重新启动前需要将 label 设回 testing。
 
-reset-world 只用于分支房间，只有 admin 可用（同时需要项目可见）。`confirm` 必须与房间 ID 完全一致，否则返回 400 `invalid_request`。前提条件：房间为 stopped 或 closed，label 为 finished，保留着世界，并且该房间 generation 最大的快照已经通过 tank 校验（停止流程保证此后的周期没有运行过进程）；任一条件不满足返回 409 `conflict`。执行时按 UID 删除世界卷（Kubernetes 后端为 PVC）并等待删除完成，清除 runtime 中的世界状态，`seed` 写入房间（默认 `empty`），`seedResolved` 清空，记录 `world_reset`（房间、generation、卷 UID、最新快照、seed、时间）并发送同名 SSE 事件。原快照与世界资产不变；下一次启动按 seed 创建世界。命令 `vex room reset-world <room> -p <project> [--seed SEED]` 发送请求前要求输入房间 ID。
+reset-world 只用于分支房间，只有 admin 可用（同时需要项目可见）。`confirm` 必须与房间 ID 完全一致，否则返回 400 `invalid_request`。前提条件：房间为 stopped 或 closed，label 为 finished，保留着世界，并且该房间 generation 最大的快照已经通过 tank 校验（停止流程保证此后的周期没有运行过进程）；任一条件不满足返回 409 `conflict`。删除前解析并校验 seed。执行时按 UID 删除世界卷（Kubernetes 后端为 PVC）并等待删除完成，清除 runtime 中的世界状态，`seed` 写入房间（默认 `empty`），`seedResolved` 与 `lastError` 清空，保存 `world_reset` 记录并发送同名 SSE 事件；记录字段为 `{project,roomId,generation,volumeUid,snapshotId,seed,at}`。响应返回更新后的 Room，label、state 和 generation 保持原值；已有快照与世界资产保留。重新设为 testing 后，下一次启动按 seed 创建世界。命令 `vex room reset-world <room> -p <project> [--seed SEED]` 发送请求前要求输入房间 ID。
 
 DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、没有有效租约、没有受保留规则保护快照的记录；否则返回 `conflict`。删除保留 generation 墓碑。commit/world 房间关闭超过 30 天且不受保留快照或世界引用保护时也可被自动清理。
 
@@ -197,7 +198,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 
 | 类型 | 字段 |
 | --- | --- |
-| `PublicMeta` | `name:string`、`version:string`、`auth:{methods:["invite"]}`。name 来自 server.name，默认主机名；version 为 `0.3.0`。 |
+| `PublicMeta` | `name:string`、`version:string`、`auth:{methods:string[]}`。methods 包含 invite，启用 GitHub provider 时还包含 github；name 来自 server.name，默认主机名；version 为 `0.3.0`。 |
 | `Meta` | PublicMeta 全部字段，以及 `zone:string`、`publicBaseURL:string`、`runtimes:{name:{java:int,serverImage:string}}`、`agents:[{minecraft,loader,version}]`。 |
 | `User` | `id:string`、`admin:bool`、`minecraft:string[]`、`identities:string[]`、`projects:{projectId:role}`。 |
 | `Session` | `id:string`、`user:string`、`client:string`、`createdAt`、`lastUsedAt`、`expiresAt`、`current:bool`。响应不包含凭据及摘要。 |
@@ -206,7 +207,7 @@ DELETE 仅删除当前项目已 closed、没有保留世界或待重启请求、
 | `Branch` | `project`、`name`、`head`、`rooms:{loader:roomId}`、`builds:{loader:BuildSummary?}`。 |
 | `Commit` | `project`、`sha`、`parents:string[]`、`subject`、`author`、`time`、`refs:string[]`、`builds:{loader:BuildSummary?}`。 |
 | `BuildSummary` | `id`、`status`。 |
-| `Build` | `project`、`id`、`source:{kind:"host"}`、`sha`、`loader`、`status`、`attempt:int`、`queuedAt`、`startedAt?`、`finishedAt?`、`minecraft:string?`、`loaderVersion:string?`、`java:int?`、`builtAt?`、`durationSec:number?`、`modIds:string[]`、`files:BuildFile[]`、`log:string`、`lastError:Error?`、`commit:CommitInfo?`、`manifest:Manifest?`、`commitMissingAt:time?`。 |
+| `Build` | `project`、`id`、`source:{kind:"host"/"ci",repository?,workflow?,runId?,runAttempt?,prNumber?,event?,htmlUrl?}`、`sha`、`loader`、`status`、`attempt:int`、`queuedAt`、`startedAt?`、`finishedAt?`、`minecraft:string?`、`loaderVersion:string?`、`java:int?`、`builtAt?`、`durationSec:number?`、`modIds:string[]`、`files:BuildFile[]`、`log:string`、`lastError:Error?`、`commit:CommitInfo?`、`manifest:Manifest?`、`commitMissingAt:time?`。source 的可选字段无值时省略。 |
 | `CommitInfo` | `sha`、`subject`、`author`、`time`。记录创建时从 Git 读取。 |
 | `Manifest` | 创建记录时解析并校验的 `vex.toml`：`schema`、`minecraft:{version,java}`、`loaders:{id:{loaderVersion,build,agent,files,deps}}`、`world:{extraRootEntries}`、`rooms:{memory}`。 |
 | `BuildFile` | `name`、`sha1`、`sha256`、`sha512`、`size:int64`、`side:"both"/"client"/"server"`、`url`、`path`。 |
